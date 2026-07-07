@@ -1,0 +1,3 @@
+[submodule "backend/newsletter-repo"]
+	path = backend/newsletter-repo
+	url = https://github.com/gencturkler/teknopol-newsletter-digest.git

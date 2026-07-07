@@ -1,0 +1,10 @@
+[
+  { "name": "TechCrunch", "url": "https://techcrunch.com/feed/" },
+  { "name": "Wired", "url": "https://www.wired.com/feed/rss" },
+  { "name": "HackerNews", "url": "https://hnrss.org/frontpage?points=100" },
+  { "name": "Search Engine Land", "url": "https://searchengineland.com/feed" },
+  { "name": "MarTech", "url": "https://martech.org/feed/" },
+  { "name": "Neil Patel Blog", "url": "https://neilpatel.com/blog/feed/" },
+  { "name": "Google Keyword Blog", "url": "https://blog.google/rss/" },
+  { "name": "The Business of Fashion Podcast", "url": "https://businessoffashion.libsyn.com/rss" }
+]

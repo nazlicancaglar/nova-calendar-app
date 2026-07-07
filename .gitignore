@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Production Build Output
+frontend/dist/
+
+# Secrets
+.env
+.env*.local
+
+# Temp Files & Logs
+backend/temp/
+*.log
+npm-debug.log*
+
+# IDE/OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

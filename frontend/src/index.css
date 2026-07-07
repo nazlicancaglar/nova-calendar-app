@@ -1,0 +1,303 @@
+:root {
+  /* Fonts */
+  --font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-serif: 'Playfair Display', Georgia, serif;
+
+  /* Common Layout Styles */
+  --shadow-sm: 0 2px 8px rgba(142, 122, 119, 0.05);
+  --shadow-md: 0 8px 24px rgba(142, 122, 119, 0.08);
+  --shadow-lg: 0 16px 40px rgba(142, 122, 119, 0.12);
+  --radius-lg: 24px;
+  --radius-md: 16px;
+  --radius-sm: 8px;
+  --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Theme-specific variables default (Peach Echo) */
+  --bg-app: #FDF8F6; /* Soft warm pinkish-beige background */
+  --bg-card: #FFFFFF; /* White card backgrounds */
+  --bg-card-hover: #FCF5F2;
+  --border-card: rgba(228, 209, 203, 0.4);
+  
+  --text-main: #332422; /* Deep warm brown/charcoal */
+  --text-muted: #8E7A77; /* Muted brown-gray */
+  --text-light: #BCAEAC;
+  
+  --color-coral-dark: #f47358; /* Peach Echo HEX: #f47358 */
+  --color-coral-light: #FCECE8;
+  --color-gold-dark: #A66E3A;
+  --color-gold-light: #FBF0DF;
+  --color-green-dark: #4A7A54;
+  --color-green-light: #E9F4EB;
+  --color-purple-dark: #5C4E6B;
+  --color-purple-light: #F2EFF4;
+  
+  --weather-bg: #f47358;
+  --weather-text: #FFFFFF;
+
+  --bg-navbar: rgba(255, 255, 255, 0.6);
+  --bg-nav-hover: rgba(228, 209, 203, 0.2);
+  --bg-nav-active: rgba(228, 209, 203, 0.3);
+  --bg-goal-hover: rgba(228, 209, 203, 0.12);
+  
+  --body-bg: repeating-linear-gradient(
+    90deg,
+    #FFFDFD,
+    #FFFDFD 36px,
+    #FDF2EE 36px,
+    #FDF2EE 72px
+  );
+}
+
+/* Midnight Inferno (Burnt Toast + Red Inferno Dark Theme) */
+[data-theme="inferno"] {
+  --bg-app: #200808; /* Burnt Toast */
+  --bg-card: #301212;
+  --bg-card-hover: #3b1a1a;
+  --border-card: rgba(78, 0, 0, 0.5); /* Red Inferno borders */
+  
+  --text-main: #FDF8F6;
+  --text-muted: #BCAEAC;
+  --text-light: #8E7A77;
+  
+  --color-coral-dark: #f47358; /* Peach Echo as bright accent */
+  --color-coral-light: #4E0000; /* Red Inferno as badge backgrounds */
+  --color-gold-dark: #A66E3A;
+  --color-gold-light: #302010;
+  --color-green-dark: #4A7A54;
+  --color-green-light: #182c1c;
+  --color-purple-dark: #dbbddc; /* Faded Violet */
+  --color-purple-light: #341f37;
+  
+  --weather-bg: #4E0000; /* Red Inferno */
+  --weather-text: #FFFFFF;
+
+  --bg-navbar: rgba(48, 18, 18, 0.6);
+  --bg-nav-hover: rgba(78, 0, 0, 0.25);
+  --bg-nav-active: rgba(78, 0, 0, 0.4);
+  --bg-goal-hover: rgba(78, 0, 0, 0.15);
+  
+  --body-bg: repeating-linear-gradient(
+    90deg,
+    #250c0c,
+    #250c0c 36px,
+    #200808 36px,
+    #200808 72px
+  );
+}
+
+/* English Breakfast (English Breakfast + Faded Violet Theme) */
+[data-theme="breakfast"] {
+  --bg-app: #F5F2F5;
+  --bg-card: #FFFFFF;
+  --bg-card-hover: #FDFBFD;
+  --border-card: rgba(219, 189, 220, 0.4); /* Faded Violet */
+  
+  --text-main: #451616; /* English Breakfast */
+  --text-muted: #805A5A;
+  --text-light: #A68B8B;
+  
+  --color-coral-dark: #C95B43;
+  --color-coral-light: #FCECE8;
+  --color-gold-dark: #A66E3A;
+  --color-gold-light: #FBF0DF;
+  --color-green-dark: #4A7A54;
+  --color-green-light: #E9F4EB;
+  --color-purple-dark: #99a5cd; /* Bright Bluebell */
+  --color-purple-light: #EAEFFB;
+  
+  --weather-bg: #dbbddc; /* Faded Violet */
+  --weather-text: #451616;
+
+  --bg-navbar: rgba(255, 255, 255, 0.6);
+  --bg-nav-hover: rgba(219, 189, 220, 0.2);
+  --bg-nav-active: rgba(219, 189, 220, 0.35);
+  --bg-goal-hover: rgba(219, 189, 220, 0.12);
+  
+  --body-bg: repeating-linear-gradient(
+    90deg,
+    #FDFBFD,
+    #FDFBFD 36px,
+    #F5F2F5 36px,
+    #F5F2F5 72px
+  );
+}
+
+/* Bright Bluebell Theme */
+[data-theme="bluebell"] {
+  --bg-app: #F0F2F9;
+  --bg-card: #FFFFFF;
+  --bg-card-hover: #F6F8FD;
+  --border-card: rgba(153, 165, 205, 0.3); /* Bright Bluebell */
+  
+  --text-main: #1D263B;
+  --text-muted: #5C6B8D;
+  --text-light: #8C9BB4;
+  
+  --color-coral-dark: #C95B43;
+  --color-coral-light: #FCECE8;
+  --color-gold-dark: #A66E3A;
+  --color-gold-light: #FBF0DF;
+  --color-green-dark: #3D7C5E;
+  --color-green-light: #E9F4EB;
+  --color-purple-dark: #dbbddc; /* Faded Violet */
+  --color-purple-light: #F7F2F8;
+  
+  --weather-bg: #99a5cd; /* Bright Bluebell */
+  --weather-text: #FFFFFF;
+
+  --bg-navbar: rgba(255, 255, 255, 0.6);
+  --bg-nav-hover: rgba(153, 165, 205, 0.2);
+  --bg-nav-active: rgba(153, 165, 205, 0.35);
+  --bg-goal-hover: rgba(153, 165, 205, 0.12);
+  
+  --body-bg: repeating-linear-gradient(
+    90deg,
+    #F6F8FD,
+    #F6F8FD 36px,
+    #F0F2F9 36px,
+    #F0F2F9 72px
+  );
+}
+
+/* Artcoast Leopard / Wild Rose Theme */
+[data-theme="artcoast"] {
+  --bg-app: #FFF3EE;
+  --bg-card: #FFFFFF;
+  --bg-card-hover: #FFF7F4;
+  --border-card: rgba(216, 135, 148, 0.35);
+  
+  --text-main: #7F2136; /* Deep Burgundy */
+  --text-muted: #A66D77;
+  --text-light: #CFA4AB;
+  
+  --color-coral-dark: #CB5D35; /* Terracotta burnt orange */
+  --color-coral-light: #FFF0EB;
+  --color-gold-dark: #A66E3A;
+  --color-gold-light: #FBF0DF;
+  --color-green-dark: #4A7A54;
+  --color-green-light: #E9F4EB;
+  --color-purple-dark: #D88794; /* Dusty Rose */
+  --color-purple-light: #FAEFF1;
+  
+  --weather-bg: #CB5D35;
+  --weather-text: #FFFFFF;
+
+  --bg-navbar: rgba(255, 255, 255, 0.7);
+  --bg-nav-hover: rgba(216, 135, 148, 0.2);
+  --bg-nav-active: rgba(216, 135, 148, 0.3);
+  --bg-goal-hover: rgba(216, 135, 148, 0.12);
+  
+  --body-bg: repeating-linear-gradient(
+    90deg,
+    #FFF8F5,
+    #FFF8F5 36px,
+    #FFF2ED 36px,
+    #FFF2ED 72px
+  );
+}
+
+/* Nancy Parrish / Tiber Velvet Theme */
+[data-theme="parrish"] {
+  --bg-app: #F9F6F3; /* Pampas soft off-white */
+  --bg-card: #FFFFFF;
+  --bg-card-hover: #FAF7F5;
+  --border-card: rgba(114, 27, 50, 0.25); /* Night Shadz borders */
+  
+  --text-main: #132226; /* Tiber deep dark teal/navy-slate */
+  --text-muted: #566352;
+  --text-light: #8E988D;
+  
+  --color-coral-dark: #721B32; /* Night Shadz deep burgundy */
+  --color-coral-light: #FDF0F3;
+  --color-gold-dark: #8A7321; /* Wild Rice lime-gold */
+  --color-gold-light: #F5F2DF;
+  --color-green-dark: #4A5F35; /* Yokon Gold olive */
+  --color-green-light: #EBF1E5;
+  --color-purple-dark: #53757C; /* Tiber slate-teal */
+  --color-purple-light: #EBF3F4;
+  
+  --weather-bg: #132226;
+  --weather-text: #FFFFFF;
+
+  --bg-navbar: rgba(255, 255, 255, 0.75);
+  --bg-nav-hover: rgba(114, 27, 50, 0.15);
+  --bg-nav-active: rgba(114, 27, 50, 0.25);
+  --bg-goal-hover: rgba(114, 27, 50, 0.1);
+  
+  --body-bg: repeating-linear-gradient(
+    90deg,
+    #FAF8F5,
+    #FAF8F5 36px,
+    #F4EFEB 36px,
+    #F4EFEB 72px
+  );
+}
+
+/* Velvet Olive Theme */
+[data-theme="olive"] {
+  --bg-app: #F4F6F4; /* Soft warm sage/olive white */
+  --bg-card: #FFFFFF;
+  --bg-card-hover: #F6FAF6;
+  --border-card: rgba(85, 107, 47, 0.25);
+  
+  --text-main: #253020; /* Deep Olive Black */
+  --text-muted: #556650;
+  --text-light: #8B9B85;
+  
+  --color-coral-dark: #556B2F; /* Dark Olive Green primary */
+  --color-coral-light: #EBF2E5;
+  --color-gold-dark: #A66E3A;
+  --color-gold-light: #FBF0DF;
+  --color-green-dark: #3B5323;
+  --color-green-light: #E1EBE0;
+  --color-purple-dark: #556B2F;
+  --color-purple-light: #EBF2E5;
+  
+  --weather-bg: #556B2F;
+  --weather-text: #FFFFFF;
+
+  --bg-navbar: rgba(255, 255, 255, 0.75);
+  --bg-nav-hover: rgba(85, 107, 47, 0.15);
+  --bg-nav-active: rgba(85, 107, 47, 0.25);
+  --bg-goal-hover: rgba(85, 107, 47, 0.1);
+  
+  --body-bg: repeating-linear-gradient(
+    90deg,
+    #F6FAF6,
+    #F6FAF6 36px,
+    #F0F5F0 36px,
+    #F0F5F0 72px
+  );
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--text-main);
+  background: var(--body-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font-family: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+  outline: none;
+}
+
+input, textarea {
+  font-family: inherit;
+}
