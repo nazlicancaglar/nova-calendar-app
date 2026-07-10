@@ -81,6 +81,15 @@ const en = {
   notePlaceholder: "Write a note...",
   deleteNoteTooltip: "Delete note",
   confirmDeleteNote: "Are you sure you want to delete this note?",
+  selectTool: "Select",
+  selectionHint: "Drag a box around the handwriting you want to convert, then click \"Convert to Text\".",
+  recognizeButton: "Convert to Text",
+  recognizingStatus: "Reading handwriting...",
+  recognizedTextTitle: "Recognized Text",
+  addAsTaskButton: "Add as Task",
+  taskAddedToast: "Added to priorities!",
+  recognitionFailedError: "Couldn't read that handwriting. Try a clearer, larger selection.",
+  noSelectionError: "Draw a selection box around some handwriting first.",
 
   // WeeklyContent Tab
   weeklyPlanner: "Weekly Content Planner",

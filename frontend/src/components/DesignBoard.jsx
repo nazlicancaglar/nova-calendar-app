@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Eraser, Pencil, Undo2, Trash2, Plus, X, Check, Loader2 } from 'lucide-react';
+import { Eraser, Pencil, Undo2, Trash2, Plus, X, Check, Loader2, ScanText, ListPlus } from 'lucide-react';
 import { translations } from '../translations';
 
 // Fixed internal drawing resolution — displayed responsively via CSS, kept
@@ -12,23 +12,33 @@ const BRUSH_COLORS = ['#1f2937', '#ef4444', '#f97316', '#eab308', '#22c55e', '#3
 const BRUSH_SIZES = [3, 6, 12];
 const NOTE_COLORS = ['#fff7ae', '#ffd6d6', '#d6f5d6', '#d6e6ff', '#f0d6ff'];
 
-export default function DesignBoard({ lang }) {
+export default function DesignBoard({ lang, onAddPriority, onRefresh }) {
   const t = translations[lang] || translations.tr;
 
   const canvasRef = useRef(null);
   const ctxRef = useRef(null);
   const isDrawingRef = useRef(false);
+  const isSelectingRef = useRef(false);
   const lastPointRef = useRef({ x: 0, y: 0 });
+  const selectStartRef = useRef({ x: 0, y: 0 });
   const historyRef = useRef([]); // undo stack of dataURLs
   const saveTimerRef = useRef(null);
   const skipNextSaveRef = useRef(false);
 
   const [color, setColor] = useState(BRUSH_COLORS[0]);
   const [brushSize, setBrushSize] = useState(BRUSH_SIZES[1]);
-  const [tool, setTool] = useState('pen'); // 'pen' | 'eraser'
+  const [tool, setTool] = useState('pen'); // 'pen' | 'eraser' | 'select'
+  const [selection, setSelection] = useState(null); // {x0,y0,x1,y1} in logical canvas coords
   const [notes, setNotes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saveStatus, setSaveStatus] = useState('idle'); // idle | saving | saved
+
+  // Handwriting -> text recognition (TrOCR) state
+  const [recognizing, setRecognizing] = useState(false);
+  const [recognizeError, setRecognizeError] = useState('');
+  const [recognizedText, setRecognizedText] = useState(null); // null = panel hidden
+  const [taskPriority, setTaskPriority] = useState('MED');
+  const [taskAdded, setTaskAdded] = useState(false);
 
   const fillWhite = (ctx) => {
     ctx.save();
@@ -125,6 +135,15 @@ export default function DesignBoard({ lang }) {
 
   const handlePointerDown = (e) => {
     e.preventDefault();
+
+    if (tool === 'select') {
+      const pos = getPos(e);
+      isSelectingRef.current = true;
+      selectStartRef.current = pos;
+      setSelection({ x0: pos.x, y0: pos.y, x1: pos.x, y1: pos.y });
+      return;
+    }
+
     const ctx = ctxRef.current;
     pushHistory();
     isDrawingRef.current = true;
@@ -137,6 +156,14 @@ export default function DesignBoard({ lang }) {
   };
 
   const handlePointerMove = (e) => {
+    if (tool === 'select') {
+      if (!isSelectingRef.current) return;
+      e.preventDefault();
+      const pos = getPos(e);
+      setSelection({ x0: selectStartRef.current.x, y0: selectStartRef.current.y, x1: pos.x, y1: pos.y });
+      return;
+    }
+
     if (!isDrawingRef.current) return;
     e.preventDefault();
     const ctx = ctxRef.current;
@@ -151,6 +178,10 @@ export default function DesignBoard({ lang }) {
   };
 
   const handlePointerUp = () => {
+    if (tool === 'select') {
+      isSelectingRef.current = false;
+      return;
+    }
     if (!isDrawingRef.current) return;
     isDrawingRef.current = false;
     scheduleSave();
@@ -175,7 +206,83 @@ export default function DesignBoard({ lang }) {
     pushHistory();
     const ctx = ctxRef.current;
     fillWhite(ctx);
+    setSelection(null);
     scheduleSave(canvasRef.current.toDataURL('image/png'));
+  };
+
+  // ── Handwriting recognition (Design Board ink -> text via TrOCR) ────────
+  const selectionBox = () => {
+    if (!selection) return null;
+    const x = Math.min(selection.x0, selection.x1);
+    const y = Math.min(selection.y0, selection.y1);
+    const w = Math.abs(selection.x1 - selection.x0);
+    const h = Math.abs(selection.y1 - selection.y0);
+    return { x, y, w, h };
+  };
+
+  const cropSelectionToDataURL = () => {
+    const box = selectionBox();
+    const canvas = canvasRef.current;
+    if (!box || box.w < 4 || box.h < 4) return null;
+
+    // Canvas backing-store pixels are devicePixelRatio-scaled, while selection
+    // coordinates are in the logical CANVAS_W x CANVAS_H space — convert.
+    const scaleX = canvas.width / CANVAS_W;
+    const scaleY = canvas.height / CANVAS_H;
+
+    const temp = document.createElement('canvas');
+    temp.width = box.w * scaleX;
+    temp.height = box.h * scaleY;
+    temp.getContext('2d').drawImage(
+      canvas,
+      box.x * scaleX, box.y * scaleY, box.w * scaleX, box.h * scaleY,
+      0, 0, temp.width, temp.height
+    );
+    return temp.toDataURL('image/png');
+  };
+
+  const handleRecognize = () => {
+    const dataUrl = cropSelectionToDataURL();
+    if (!dataUrl) {
+      setRecognizeError(t.noSelectionError);
+      return;
+    }
+    setRecognizing(true);
+    setRecognizeError('');
+    setRecognizedText(null);
+    setTaskAdded(false);
+
+    fetch('/api/design-board/recognize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: dataUrl })
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          setRecognizedText(data.text || '');
+        } else {
+          setRecognizeError(data.error || t.recognitionFailedError);
+        }
+      })
+      .catch(err => {
+        console.error('Recognition error:', err);
+        setRecognizeError(t.recognitionFailedError);
+      })
+      .finally(() => setRecognizing(false));
+  };
+
+  const handleAddAsTask = () => {
+    if (!recognizedText || !recognizedText.trim() || !onAddPriority) return;
+    onAddPriority(recognizedText.trim(), taskPriority);
+    setTaskAdded(true);
+    if (onRefresh) onRefresh(true);
+  };
+
+  const closeRecognizePanel = () => {
+    setRecognizedText(null);
+    setRecognizeError('');
+    setTaskAdded(false);
   };
 
   // ── Notes ────────────────────────────────────────────────────────────────
@@ -279,6 +386,37 @@ export default function DesignBoard({ lang }) {
               >
                 <Eraser size={14} /> {t.eraserTool}
               </button>
+              <button
+                onClick={() => setTool('select')}
+                title={t.selectTool}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '6px',
+                  padding: '6px 10px', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: 600,
+                  border: `1px solid ${tool === 'select' ? 'var(--color-coral-dark)' : 'var(--border-card)'}`,
+                  background: tool === 'select' ? 'var(--color-coral-light)' : 'transparent',
+                  color: tool === 'select' ? 'var(--color-coral-dark)' : 'var(--text-main)'
+                }}
+              >
+                <ScanText size={14} /> {t.selectTool}
+              </button>
+
+              <div style={{ width: '1px', height: '22px', background: 'var(--border-card)' }} />
+
+              <button
+                onClick={handleRecognize}
+                disabled={recognizing}
+                title={t.recognizeButton}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '6px',
+                  padding: '6px 12px', borderRadius: '8px', cursor: recognizing ? 'default' : 'pointer', fontSize: '13px', fontWeight: 600,
+                  border: '1px solid var(--color-coral-dark)',
+                  background: 'var(--color-coral-dark)', color: '#fff',
+                  opacity: recognizing ? 0.7 : 1
+                }}
+              >
+                {recognizing ? <Loader2 size={14} className="spin" /> : <ScanText size={14} />}
+                {recognizing ? t.recognizingStatus : t.recognizeButton}
+              </button>
 
               <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <span style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '5px' }}>
@@ -310,24 +448,127 @@ export default function DesignBoard({ lang }) {
               </div>
             </div>
 
+            {tool === 'select' && (
+              <div style={{ fontSize: '12.5px', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                {t.selectionHint}
+              </div>
+            )}
+
             {/* Canvas surface */}
             <div style={{
               background: 'var(--bg-card)', border: '1px solid var(--border-card)',
               borderRadius: '12px', padding: '10px', boxShadow: 'var(--shadow-sm)'
             }}>
-              <canvas
-                ref={canvasRef}
-                style={{
-                  width: '100%', aspectRatio: `${CANVAS_W} / ${CANVAS_H}`, display: 'block',
-                  borderRadius: '8px', touchAction: 'none', cursor: tool === 'eraser' ? 'cell' : 'crosshair',
-                  background: '#ffffff'
-                }}
-                onPointerDown={handlePointerDown}
-                onPointerMove={handlePointerMove}
-                onPointerUp={handlePointerUp}
-                onPointerLeave={handlePointerUp}
-              />
+              <div style={{ position: 'relative' }}>
+                <canvas
+                  ref={canvasRef}
+                  style={{
+                    width: '100%', aspectRatio: `${CANVAS_W} / ${CANVAS_H}`, display: 'block',
+                    borderRadius: '8px', touchAction: 'none',
+                    cursor: tool === 'eraser' ? 'cell' : tool === 'select' ? 'crosshair' : 'crosshair',
+                    background: '#ffffff'
+                  }}
+                  onPointerDown={handlePointerDown}
+                  onPointerMove={handlePointerMove}
+                  onPointerUp={handlePointerUp}
+                  onPointerLeave={handlePointerUp}
+                />
+                {selection && (() => {
+                  const box = selectionBox();
+                  return (
+                    <div style={{
+                      position: 'absolute', pointerEvents: 'none',
+                      left: `${(box.x / CANVAS_W) * 100}%`,
+                      top: `${(box.y / CANVAS_H) * 100}%`,
+                      width: `${(box.w / CANVAS_W) * 100}%`,
+                      height: `${(box.h / CANVAS_H) * 100}%`,
+                      border: '2px dashed var(--color-coral-dark)',
+                      background: 'rgba(244, 115, 88, 0.1)',
+                      borderRadius: '2px'
+                    }} />
+                  );
+                })()}
+              </div>
             </div>
+
+            {/* Recognized text -> task panel */}
+            {(recognizing || recognizeError || recognizedText !== null) && (
+              <div style={{
+                marginTop: '14px', background: 'var(--bg-card)', border: '1px solid var(--border-card)',
+                borderRadius: '12px', padding: '16px', position: 'relative'
+              }}>
+                <button
+                  onClick={closeRecognizePanel}
+                  style={{
+                    position: 'absolute', top: '10px', right: '10px',
+                    width: '24px', height: '24px', borderRadius: '50%',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--text-muted)'
+                  }}
+                >
+                  <X size={15} />
+                </button>
+
+                <h4 style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-main)', marginBottom: '10px' }}>
+                  {t.recognizedTextTitle}
+                </h4>
+
+                {recognizing && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-muted)', fontSize: '13px' }}>
+                    <Loader2 size={14} className="spin" /> {t.recognizingStatus}
+                  </div>
+                )}
+
+                {recognizeError && !recognizing && (
+                  <div style={{ color: '#ef4444', fontSize: '13px' }}>{recognizeError}</div>
+                )}
+
+                {!recognizing && recognizedText !== null && (
+                  <>
+                    <textarea
+                      value={recognizedText}
+                      onChange={(e) => setRecognizedText(e.target.value)}
+                      rows={3}
+                      style={{
+                        width: '100%', padding: '10px', borderRadius: '8px', fontSize: '14px',
+                        border: '1px solid var(--border-card)', background: 'transparent', color: 'var(--text-main)',
+                        fontFamily: 'inherit', resize: 'vertical', marginBottom: '12px'
+                      }}
+                    />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                      <select
+                        value={taskPriority}
+                        onChange={(e) => setTaskPriority(e.target.value)}
+                        style={{
+                          padding: '6px 10px', borderRadius: '8px', fontSize: '13px', fontWeight: 600,
+                          border: '1px solid var(--border-card)', background: 'var(--bg-card)', color: 'var(--text-main)'
+                        }}
+                      >
+                        <option value="HIGH">{t.high}</option>
+                        <option value="MED">{t.medium}</option>
+                        <option value="LOW">{t.low}</option>
+                      </select>
+                      <button
+                        onClick={handleAddAsTask}
+                        disabled={!recognizedText.trim() || taskAdded}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: '6px',
+                          padding: '7px 14px', borderRadius: '8px', fontSize: '13px', fontWeight: 600,
+                          cursor: (!recognizedText.trim() || taskAdded) ? 'default' : 'pointer',
+                          border: '1px solid var(--color-coral-dark)',
+                          background: taskAdded ? 'transparent' : 'var(--color-coral-dark)',
+                          color: taskAdded ? 'var(--color-coral-dark)' : '#fff',
+                          opacity: !recognizedText.trim() ? 0.5 : 1
+                        }}
+                      >
+                        {taskAdded ? <Check size={14} /> : <ListPlus size={14} />}
+                        {taskAdded ? t.taskAddedToast : t.addAsTaskButton}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Notes panel */}

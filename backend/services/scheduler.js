@@ -7,7 +7,7 @@ const { fetchAllEmails } = require('./email');
 const { fetchAllCalendarEvents } = require('./calendar');
 const { syncNewsletterRepo } = require('./newsletter');
 const { runInstagramAnalysis } = require('./instagram');
-const { getVancouverWeather } = require('./weather');
+const { getWeatherForLocation } = require('./weather');
 
 const CACHE_PATH = path.join(__dirname, '..', 'dashboard-cache.json');
 const GOALS_PATH = path.join(__dirname, '..', '..', 'goals.json');
@@ -54,15 +54,8 @@ async function syncAllData() {
     }
   }
 
-  // 2. Fetch all other integrations in parallel (Notion tasks disabled per user request)
-  const [emailData, calendarEvents, instagramData, liveWeather] = await Promise.all([
-    fetchAllEmails(),
-    fetchAllCalendarEvents(),
-    runInstagramAnalysis(techNewsSummary),
-    getVancouverWeather()
-  ]);
-
-  // 3. Load existing cache to preserve static or checkbox states
+  // 2a. Load existing cache first so we know the user's saved location (set by
+  // the frontend via browser geolocation) before fetching weather for it.
   let currentCache = {};
   if (fs.existsSync(CACHE_PATH)) {
     try {
@@ -70,14 +63,23 @@ async function syncAllData() {
     } catch (e) {}
   }
 
+  // 2b. Fetch all other integrations in parallel (Notion tasks disabled per user request)
+  const [emailData, calendarEvents, instagramData, liveWeather] = await Promise.all([
+    fetchAllEmails(),
+    fetchAllCalendarEvents(),
+    runInstagramAnalysis(techNewsSummary),
+    getWeatherForLocation(currentCache.location, null)
+  ]);
+
   // 4. Merge results with fallbacks if APIs returned null (not configured yet)
   const mergedData = {
     lastUpdated: new Date().toISOString(),
     weather: liveWeather || currentCache.weather || {
-      temp: '17°C',
-      condition: 'Sunny & clear',
-      summary: 'Perfect conditions to film outside — great light all morning and afternoon'
+      temp: '—',
+      condition: 'Unknown',
+      summary: 'Location not detected yet — allow location access in the browser or check back after the next sync.'
     },
+    location: currentCache.location || null,
     todayContent: instagramData ? instagramData.todayContent : (currentCache.todayContent || [
       {
         title: 'How I manage my storage (Vibe Coding Edition)',

@@ -48,6 +48,33 @@ export default function App() {
     fetchDashboardData();
   }, []);
 
+  // Ask the browser for the real location once per load and push it to the
+  // backend so weather reflects where the user actually is (fixes the old
+  // hardcoded-Vancouver bug). Silently no-ops if permission is denied —
+  // the backend then falls back to IP-based geolocation on its own.
+  useEffect(() => {
+    if (!('geolocation' in navigator)) return;
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        fetch('/api/location', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lat: latitude, lon: longitude })
+        })
+          .then((res) => res.json())
+          .then((data) => {
+            if (data.success && data.weather) {
+              setDashboardData((prev) => (prev ? { ...prev, weather: data.weather } : prev));
+            }
+          })
+          .catch((err) => console.error('Error saving location:', err));
+      },
+      (err) => console.warn('Geolocation unavailable/denied:', err.message),
+      { timeout: 10000, maximumAge: 60 * 60 * 1000 }
+    );
+  }, []);
+
   const fetchDashboardData = (silent = false) => {
     if (!silent) setLoading(true);
     fetch('/api/dashboard')
@@ -391,7 +418,7 @@ export default function App() {
             <Newsletter lang={lang} />
           )}
           {activeTab === 'design' && (
-            <DesignBoard lang={lang} />
+            <DesignBoard lang={lang} onAddPriority={handleAddPriority} onRefresh={fetchDashboardData} />
           )}
           {activeTab === 'weekly-content' && (
             <WeeklyContent

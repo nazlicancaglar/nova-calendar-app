@@ -71,10 +71,11 @@ function getDashboardData() {
   const defaultData = {
     lastUpdated: new Date().toISOString(),
     weather: {
-      temp: '17°C',
-      condition: 'Sunny & clear',
-      summary: 'Perfect conditions to film outside — great light all morning and afternoon'
+      temp: '—',
+      condition: 'Unknown',
+      summary: 'Location not detected yet — allow location access in the browser or check back after the next sync.'
     },
+    location: null,
     todayContent: [
       {
         title: 'How I manage my storage',
@@ -960,6 +961,30 @@ app.post('/api/newsletter/refresh', async (req, res) => {
   }
 });
 
+// ── Location + live weather (browser geolocation -> Open-Meteo) ─────────────
+// Fixes the earlier hardcoded-Vancouver bug: the frontend asks the browser
+// for real coordinates and posts them here; we save them and refresh weather
+// immediately using the free/open Open-Meteo API (no key needed).
+app.post('/api/location', async (req, res) => {
+  try {
+    const { lat, lon, label } = req.body;
+    if (typeof lat !== 'number' || typeof lon !== 'number') {
+      return res.status(400).json({ error: 'lat and lon (numbers) are required' });
+    }
+
+    const { getWeatherForLocation } = require('./services/weather');
+    const data = getDashboardData();
+    data.location = { lat, lon, label: label || null };
+    data.weather = await getWeatherForLocation(data.location, null);
+    fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+
+    res.json({ success: true, weather: data.weather, location: data.location });
+  } catch (err) {
+    console.error('[server] Location/weather update error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Design Board (canvas drawing + sticky notes) ────────────────────────────
 function getDesignBoard() {
   if (fs.existsSync(DESIGN_BOARD_PATH)) {
@@ -988,6 +1013,23 @@ app.post('/api/design-board', (req, res) => {
   } catch (err) {
     console.error('[server] Design board save error:', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Handwriting recognition (Design Board ink -> text via Microsoft TrOCR) ──
+// Runs fully locally through transformers.js/ONNX — no external API, no key.
+app.post('/api/design-board/recognize', async (req, res) => {
+  try {
+    const { image } = req.body;
+    if (!image) {
+      return res.status(400).json({ error: 'image (base64 data URL) is required' });
+    }
+    const { recognizeHandwriting } = require('./services/handwriting-ocr');
+    const text = await recognizeHandwriting(image);
+    res.json({ success: true, text });
+  } catch (err) {
+    console.error('[server] Handwriting recognition error:', err.message);
+    res.status(500).json({ error: 'Recognition failed: ' + err.message });
   }
 });
 

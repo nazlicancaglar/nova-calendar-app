@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: nova-backend
+    runtime: node
+    plan: free
+    rootDir: .
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: NODE_VERSION
+        value: 20.18.0
+    # Set the rest of these in the Render dashboard (Settings -> Environment) —
+    # they hold real credentials and must never be committed to the repo.
+    # See .env.example for the full list: OPENAI_API_KEY, NOTION_API_KEY,
+    # NOTION_DATABASE_ID, GMAIL_USER, GMAIL_APP_PASSWORD, OUTLOOK_USER,
+    # OUTLOOK_APP_PASSWORD, GOOGLE_CALENDAR_ICS_URL, OUTLOOK_CALENDAR_ICS_URL,
+    # INSTAGRAM_MY_USERNAME, INSTAGRAM_COMPETITORS, OPENROUTER_API_KEY
+    #
+    # NOTE: Render's free plan has no persistent disk — dashboard-cache.json,
+    # design-board.json, the SQLite newsletter DB, and the downloaded TrOCR
+    # model all live on ephemeral storage and reset whenever the service
+    # restarts or redeploys (which happens after ~15min of inactivity on
+    # free tier). Fine for testing; upgrade to a paid instance + attached
+    # disk (or move state to a real hosted DB) before relying on this data
+    # sticking around long-term.

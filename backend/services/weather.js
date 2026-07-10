@@ -1,3 +1,5 @@
+const geoip = require('geoip-lite');
+
 const WMO_MAPPING = {
   0: { condition: 'Sunny & clear', summary: 'Perfect conditions to film outside — great light all morning and afternoon.' },
   1: { condition: 'Mainly clear', summary: 'Very good conditions for filming. Great natural light.' },
@@ -29,15 +31,17 @@ const WMO_MAPPING = {
   99: { condition: 'Thunderstorm with hail', summary: 'Thunderstorm with hail. High risk. Stay safe and film indoors.' },
 };
 
-async function getVancouverWeather() {
+// Open-Meteo is free/open and needs no API key — the only real bug was the
+// hardcoded Vancouver coordinates. This now takes real coordinates instead.
+async function getWeatherForCoords(lat, lon, timezone = 'auto') {
   try {
-    const url = 'https://api.open-meteo.com/v1/forecast?latitude=49.2827&longitude=-123.1207&current=temperature_2m,weather_code&timezone=America/Vancouver';
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code&timezone=${encodeURIComponent(timezone)}`;
     const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
     const data = await response.json();
-    
+
     if (data && data.current) {
       const code = data.current.weather_code;
       const temp = data.current.temperature_2m;
@@ -45,19 +49,48 @@ async function getVancouverWeather() {
       return {
         temp: `${Math.round(temp)}°C`,
         condition: info.condition,
-        summary: info.summary
+        summary: info.summary,
+        lat,
+        lon
       };
     }
   } catch (error) {
-    console.error('Failed to fetch Vancouver weather from Open-Meteo:', error.message);
+    console.error('Failed to fetch weather from Open-Meteo:', error.message);
   }
-  
-  // Default fallback if API fails
+  return null;
+}
+
+// Free, fully offline IP -> lat/lon lookup (MaxMind GeoLite2 data bundled with
+// geoip-lite, MIT licensed) — used only when we don't have a browser-provided
+// location saved yet (e.g. before the user grants geolocation permission).
+function guessCoordsFromIP(ip) {
+  if (!ip) return null;
+  const cleanIp = ip.replace('::ffff:', ''); // strip IPv4-mapped IPv6 prefix
+  const geo = geoip.lookup(cleanIp);
+  if (geo && geo.ll) {
+    return { lat: geo.ll[0], lon: geo.ll[1], city: geo.city, country: geo.country };
+  }
+  return null;
+}
+
+// Resolves weather using, in order: an explicit saved location, an IP-based
+// guess, then a neutral static fallback (only if both lookups fail, e.g. on
+// localhost where IP geolocation can't resolve anything).
+async function getWeatherForLocation(location, requestIP) {
+  let coords = location && typeof location.lat === 'number' && typeof location.lon === 'number'
+    ? location
+    : guessCoordsFromIP(requestIP);
+
+  if (coords) {
+    const result = await getWeatherForCoords(coords.lat, coords.lon);
+    if (result) return result;
+  }
+
   return {
-    temp: '17°C',
-    condition: 'Sunny & clear',
-    summary: 'Perfect conditions to film outside — great light all morning and afternoon.'
+    temp: '—',
+    condition: 'Unknown',
+    summary: 'Location not detected yet — allow location access in the browser or check back after the next sync.'
   };
 }
 
-module.exports = { getVancouverWeather };
+module.exports = { getWeatherForCoords, getWeatherForLocation, guessCoordsFromIP };
