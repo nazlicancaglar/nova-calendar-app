@@ -27,3 +27,4 @@ backend/design-board.json
 .idea/
 .DS_Store
 Thumbs.db
+RENDER_ENV_PASTE.txt

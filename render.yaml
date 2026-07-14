@@ -4,24 +4,31 @@ services:
     runtime: node
     plan: free
     rootDir: .
-    buildCommand: npm install
+    # --omit=optional → ağır/native paketleri (better-sqlite3, @xenova/transformers,
+    # pi-coding-agent) ATLAR. Çekirdek planlama özellikleri bunlara ihtiyaç duymaz;
+    # build hızlanır ve native derleme riski kalkar. Newsletter/OCR istenirse
+    # FEATURES env'i açılıp bu satırdan --omit=optional kaldırılır.
+    buildCommand: npm install --omit=optional
     startCommand: npm start
+    healthCheckPath: /api/health
     envVars:
       - key: PORT
         value: 10000
       - key: NODE_VERSION
         value: 20.18.0
-    # Set the rest of these in the Render dashboard (Settings -> Environment) —
-    # they hold real credentials and must never be committed to the repo.
-    # See .env.example for the full list: OPENAI_API_KEY, NOTION_API_KEY,
-    # NOTION_DATABASE_ID, GMAIL_USER, GMAIL_APP_PASSWORD, OUTLOOK_USER,
-    # OUTLOOK_APP_PASSWORD, GOOGLE_CALENDAR_ICS_URL, OUTLOOK_CALENDAR_ICS_URL,
-    # INSTAGRAM_MY_USERNAME, INSTAGRAM_COMPETITORS, OPENROUTER_API_KEY
+    # ── Aşağıdakileri Render Dashboard → Settings → Environment'ta ELLE girin ──
+    # (Gerçek kimlik bilgileri; repoya asla commit edilmez.)
     #
-    # NOTE: Render's free plan has no persistent disk — dashboard-cache.json,
-    # design-board.json, the SQLite newsletter DB, and the downloaded TrOCR
-    # model all live on ephemeral storage and reset whenever the service
-    # restarts or redeploys (which happens after ~15min of inactivity on
-    # free tier). Fine for testing; upgrade to a paid instance + attached
-    # disk (or move state to a real hosted DB) before relying on this data
-    # sticking around long-term.
+    #   SUPABASE_URL          → Supabase Project URL (kalıcı depolama, ZORUNLU)
+    #   SUPABASE_SERVICE_KEY  → Supabase service_role secret (ZORUNLU)
+    #   APP_PASSWORD          → uygulama giriş parolası (ZORUNLU)
+    #   AUTH_SECRET           → rastgele uzun bir metin (token imzası, ZORUNLU)
+    #
+    # İsteğe bağlı (yalnızca ilgili özelliği açarsanız):
+    #   FEATURES              → virgülle: newsletter,ocr,ai,sync (boş = çekirdek)
+    #   OPENROUTER_API_KEY / OPENAI_API_KEY  → ai
+    #   GMAIL_USER / GMAIL_APP_PASSWORD ...  → sync (IMAP)
+    #
+    # NOT: Artık dashboard/design-board verisi Supabase'de KALICI durur; Render
+    # free tier diskini sıfırlasa bile veri kaybolmaz. (newsletter SQLite ve TrOCR
+    # modeli hâlâ ephemeral'dır ama bu özellikler varsayılan olarak kapalıdır.)

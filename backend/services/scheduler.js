@@ -207,15 +207,22 @@ async function syncAllData() {
   return mergedData;
 }
 
-// Schedule the task daily at 7 AM
-// Expression format: second (optional), minute, hour, day of month, month, day of week
-cron.schedule('0 7 * * *', async () => {
-  console.log('Running daily 7 AM scheduled updates...');
-  try {
-    await syncAllData();
-  } catch (error) {
-    console.error('Scheduled sync job failed:', error.message);
-  }
-});
+// Schedule the task daily at 7 AM — yalnızca FEATURES içinde "sync" varsa.
+// Deploy'da harici entegrasyonlar (Notion/IMAP/ICS/Instagram) kapalıyken bu
+// günlük iş gereksiz; env ile açıkça istenmedikçe başlatılmaz.
+const SYNC_CRON_ENABLED = (process.env.FEATURES || '')
+  .split(',').map((s) => s.trim().toLowerCase()).includes('sync');
+if (SYNC_CRON_ENABLED) {
+  // Expression format: minute, hour, day of month, month, day of week
+  cron.schedule('0 7 * * *', async () => {
+    console.log('Running daily 7 AM scheduled updates...');
+    try {
+      await syncAllData();
+    } catch (error) {
+      console.error('Scheduled sync job failed:', error.message);
+    }
+  });
+  console.log('[scheduler] Daily 7 AM sync cron enabled');
+}
 
 module.exports = { syncAllData };

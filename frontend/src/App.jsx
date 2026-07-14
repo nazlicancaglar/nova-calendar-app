@@ -1,15 +1,26 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { RefreshCw, LayoutDashboard, Newspaper, Calendar, CalendarRange, Target, Moon, Palette } from 'lucide-react';
+import { RefreshCw, LayoutDashboard, Newspaper, Calendar, CalendarRange, Target, Moon, Palette, LogOut } from 'lucide-react';
 import Dashboard from './components/Dashboard';
 import Newsletter from './components/Newsletter';
 import WeeklyContent from './components/WeeklyContent';
 import CalendarView from './components/Calendar';
 import ActionBoard from './components/ActionBoard';
 import DesignBoard from './components/DesignBoard';
+import Login from './components/Login';
 import { translations } from './translations';
+import { installFetchAuth, isLoggedIn, clearToken } from './auth';
 import './App.css';
 
+// fetch wrapper'ını modül yüklenirken bir kez kur (React render'ından önce),
+// böylece ilk /api çağrısı bile token'ı taşır ve 401 yakalanır.
+let handleUnauthorizedRef = { current: null };
+installFetchAuth(() => {
+  if (handleUnauthorizedRef.current) handleUnauthorizedRef.current();
+});
+
 export default function App() {
+  const [authed, setAuthed] = useState(() => isLoggedIn());
+  const [features, setFeatures] = useState({ newsletter: false, ocr: false, ai: false, sync: false });
   const [activeTab, setActiveTab] = useState('home');
   const [dashboardData, setDashboardData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -43,10 +54,29 @@ export default function App() {
     };
   }, []);
 
-  // Fetch dashboard data on mount
+  // 401 alınınca (token süresi doldu vb.) giriş ekranına düş
   useEffect(() => {
-    fetchDashboardData();
+    handleUnauthorizedRef.current = () => setAuthed(false);
+    return () => { handleUnauthorizedRef.current = null; };
   }, []);
+
+  // Fetch dashboard data on mount — sadece giriş yapılmışsa
+  useEffect(() => {
+    if (authed) fetchDashboardData();
+  }, [authed]);
+
+  // Aktif özellikleri çek (Newsletter vb. sekmeleri koşullu göstermek için)
+  useEffect(() => {
+    if (!authed) return;
+    fetch('/api/features')
+      .then((res) => res.json())
+      .then((f) => {
+        setFeatures(f);
+        // Devre dışı bir sekmedeyken çekirdeğe düş
+        if (!f.newsletter && activeTab === 'newsletter') setActiveTab('home');
+      })
+      .catch(() => { /* özellik listesi alınamazsa hepsi kapalı kabul */ });
+  }, [authed]);
 
   // Ask the browser for the real location once (ever) and push it to the
   // backend so weather reflects where the user actually is (fixes the old
@@ -56,6 +86,7 @@ export default function App() {
   // permission is denied — the backend then falls back to IP-based
   // geolocation on its own.
   useEffect(() => {
+    if (!authed) return;
     const sendLocation = (lat, lon) => {
       fetch('/api/location', {
         method: 'POST',
@@ -298,6 +329,11 @@ export default function App() {
       });
   };
 
+  // Giriş yapılmadıysa yalnızca giriş ekranını göster
+  if (!authed) {
+    return <Login lang={lang} onSuccess={() => setAuthed(true)} />;
+  }
+
   return (
     <div className={`app-container${activeTab === 'calendar' ? ' app-container-wide' : ''}`} style={{ position: 'relative' }}>
       
@@ -337,6 +373,21 @@ export default function App() {
           className="theme-toggle-btn"
         >
           <Moon size={20} />
+        </button>
+
+        <button
+          onClick={() => { clearToken(); setAuthed(false); }}
+          title={lang === 'tr' ? 'Çıkış Yap' : 'Log out'}
+          style={{
+            width: '40px', height: '40px', borderRadius: '50%',
+            backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-card)',
+            color: 'var(--text-main)', boxShadow: 'var(--shadow-md)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', transition: 'var(--transition-smooth)'
+          }}
+          className="theme-toggle-btn"
+        >
+          <LogOut size={18} />
         </button>
 
         {showThemeDropdown && (
@@ -425,13 +476,15 @@ export default function App() {
             <LayoutDashboard size={18} />
             <span className="nav-text">{t.home}</span>
           </button>
-          <button 
-            className={`nav-item ${activeTab === 'newsletter' ? 'active' : ''}`}
-            onClick={() => setActiveTab('newsletter')}
-          >
-            <Newspaper size={18} />
-            <span className="nav-text">{t.newsletter}</span>
-          </button>
+          {features.newsletter && (
+            <button
+              className={`nav-item ${activeTab === 'newsletter' ? 'active' : ''}`}
+              onClick={() => setActiveTab('newsletter')}
+            >
+              <Newspaper size={18} />
+              <span className="nav-text">{t.newsletter}</span>
+            </button>
+          )}
           <button 
             className={`nav-item ${activeTab === 'weekly-content' ? 'active' : ''}`}
             onClick={() => setActiveTab('weekly-content')}

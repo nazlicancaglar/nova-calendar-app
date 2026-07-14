@@ -3,8 +3,41 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const scheduler = require('./services/scheduler');
-const newsletterDb = require('./services/newsletter-db');
+const storage = require('./services/storage');
+
+// ── Özellik bayrakları (Faz 3) ──────────────────────────────────────────────
+// Deploy'da yalnızca çekirdek planlama özellikleri açık. Ağır/harici bağımlı
+// özellikler (newsletter+better-sqlite3, TrOCR el yazısı, AI üretimi) yalnızca
+// FEATURES env'inde açıkça istenirse yüklenir. Böylece Render build hafifler
+// ve devre dışı endpoint'ler 503 döner (frontend butonları gizler).
+//   Örn: FEATURES=newsletter,ocr,ai   (virgülle)
+//   Boşsa: hepsi kapalı (yalnızca çekirdek).
+const ENABLED_FEATURES = new Set(
+  (process.env.FEATURES || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+);
+function featureOn(name) {
+  return ENABLED_FEATURES.has(name);
+}
+
+// newsletter-db native better-sqlite3 yükler; yalnızca özellik açıksa require et.
+let newsletterDb = null;
+if (featureOn('newsletter')) {
+  try {
+    newsletterDb = require('./services/newsletter-db');
+  } catch (e) {
+    console.error('[features] newsletter modülü yüklenemedi, devre dışı:', e.message);
+    newsletterDb = null;
+  }
+}
+// Devre dışı özellik endpoint'leri için standart yanıt
+function featureDisabled(res, name) {
+  return res.status(503).json({ disabled: true, feature: name, error: `"${name}" özelliği bu ortamda devre dışı` });
+}
+
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -12,8 +45,94 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json({ limit: '15mb' })); // drawing canvases are base64 PNGs, can be a few MB
 
-const CACHE_PATH = path.join(__dirname, 'dashboard-cache.json');
-const DESIGN_BOARD_PATH = path.join(__dirname, 'design-board.json'); // kept separate from dashboard-cache to avoid bloating it with base64 image data
+// ── Basit ortak-parola auth ─────────────────────────────────────────────────
+// Tek ortak parola (APP_PASSWORD env). Doğru parola girilince HMAC-imzalı,
+// süreli bir token üretilir; frontend bunu Authorization header'ında yollar.
+// Harici bağımlılık yok — sadece Node crypto. APP_PASSWORD tanımlı değilse
+// auth devre dışıdır (lokal geliştirme kolaylığı).
+const APP_PASSWORD = process.env.APP_PASSWORD || '';
+const AUTH_SECRET = process.env.AUTH_SECRET || 'nova-insecure-default-secret';
+const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 gün
+
+function issueToken() {
+  const expires = Date.now() + TOKEN_TTL_MS;
+  const payload = `nova.${expires}`;
+  const sig = crypto.createHmac('sha256', AUTH_SECRET).update(payload).digest('hex');
+  // Base64url ile paketlenir: "<payload>.<sig>"
+  return Buffer.from(`${payload}.${sig}`).toString('base64url');
+}
+
+function verifyToken(token) {
+  if (!token) return false;
+  try {
+    const decoded = Buffer.from(token, 'base64url').toString('utf8');
+    const lastDot = decoded.lastIndexOf('.');
+    if (lastDot < 0) return false;
+    const payload = decoded.slice(0, lastDot);
+    const sig = decoded.slice(lastDot + 1);
+    const expected = crypto.createHmac('sha256', AUTH_SECRET).update(payload).digest('hex');
+    // Zamanlama-güvenli karşılaştırma
+    const a = Buffer.from(sig);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return false;
+    const expires = parseInt(payload.split('.')[1], 10);
+    return Number.isFinite(expires) && Date.now() < expires;
+  } catch {
+    return false;
+  }
+}
+
+// Giriş: parola doğruysa token döner
+app.post('/api/login', (req, res) => {
+  if (!APP_PASSWORD) {
+    // Auth kapalı — yine de token verip frontend akışını basit tut
+    return res.json({ success: true, token: issueToken(), authDisabled: true });
+  }
+  const supplied = (req.body && req.body.password) || '';
+  // Sabit-zamanlı parola karşılaştırması
+  const a = Buffer.from(supplied);
+  const b = Buffer.from(APP_PASSWORD);
+  const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
+  if (!ok) return res.status(401).json({ success: false, error: 'Hatalı parola' });
+  res.json({ success: true, token: issueToken() });
+});
+
+// Sağlık kontrolü (keep-alive ping için — auth gerektirmez)
+app.get('/api/health', (req, res) => res.json({ ok: true }));
+
+// Aktif özellikleri frontend'e bildir (nav sekmelerini/butonları gizlemek için).
+// Auth gerektirmez — hassas bilgi değil, sadece hangi sekmeler görünecek.
+app.get('/api/features', (req, res) => {
+  res.json({
+    newsletter: featureOn('newsletter'),
+    ocr: featureOn('ocr'),
+    ai: featureOn('ai'),
+    sync: featureOn('sync'),
+  });
+});
+
+// Koruma middleware'i: /api/login ve /api/health dışındaki tüm /api rotaları
+// geçerli token ister. APP_PASSWORD tanımlı değilse auth atlanır.
+app.use('/api', (req, res, next) => {
+  if (!APP_PASSWORD) return next(); // auth kapalı
+  if (req.path === '/login' || req.path === '/health' || req.path === '/features') return next();
+  const header = req.get('Authorization') || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : header;
+  if (verifyToken(token)) return next();
+  return res.status(401).json({ error: 'Yetkisiz — lütfen giriş yapın' });
+});
+
+// Kalıcı depolama (Supabase varsa oraya, yoksa yerel JSON dosyalarına).
+// Dashboard state'i storage.get('dashboard') / storage.set('dashboard', ...)
+// üzerinden, design board ise storage.get/set('designBoard') üzerinden akar.
+// Aşağıdaki saveDashboard/saveDesignBoard yardımcıları eski
+// writeFileSync çağrılarının yerini alır (senkron, write-through).
+function saveDashboard(data) {
+  storage.set('dashboard', data);
+}
+function saveDesignBoard(board) {
+  storage.set('designBoard', board);
+}
 
 // Helper to migrate and initialize structured quarterly goals (Action Board)
 function getOrCreateActionBoard(data) {
@@ -35,16 +154,17 @@ function getOrCreateActionBoard(data) {
     };
     // Clean up legacy flat goals
     delete data.goals;
-    fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+    saveDashboard(data);
   }
   return data.actionBoard;
 }
 
 // Helper to get cached data or initialize with realistic defaults (matching reference screenshots)
 function getDashboardData() {
-  if (fs.existsSync(CACHE_PATH)) {
+  const stored = storage.get('dashboard');
+  if (stored) {
     try {
-      const data = JSON.parse(fs.readFileSync(CACHE_PATH, 'utf8'));
+      const data = stored;
       getOrCreateActionBoard(data);
       if (!data.customEvents) {
         data.customEvents = [];
@@ -213,7 +333,7 @@ Call to action: "Do you design yourself or do you prefer ready-made templates?"`
     }
   };
 
-  fs.writeFileSync(CACHE_PATH, JSON.stringify(defaultData, null, 2), 'utf8');
+  saveDashboard(defaultData);
   return defaultData;
 }
 
@@ -262,7 +382,7 @@ app.post('/api/dashboard/categories', (req, res) => {
     color
   };
   data.calendarCategories.push(newCat);
-  fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+  saveDashboard(data);
   res.json({ success: true, categories: data.calendarCategories });
 });
 
@@ -330,7 +450,7 @@ app.post('/api/dashboard/events', (req, res) => {
   const todayCustom = data.customEvents.filter(e => e.date === todayStr);
   data.calendar = [...todaySynced, ...todayCustom];
 
-  fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+  saveDashboard(data);
   res.json({ success: true, calendar: data.calendar, customEvents: data.customEvents });
 });
 
@@ -371,7 +491,7 @@ app.post('/api/dashboard/categories/edit', (req, res) => {
         data.calendar = [...todaySynced, ...todayCustom];
       }
 
-      fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+      saveDashboard(data);
     }
   }
   res.json({ success: true, categories: data.calendarCategories || [] });
@@ -413,7 +533,7 @@ app.post('/api/dashboard/categories/delete', (req, res) => {
       data.calendar = [...todaySynced, ...todayCustom];
     }
 
-    fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+    saveDashboard(data);
   }
   res.json({ success: true, categories: data.calendarCategories || [] });
 });
@@ -440,7 +560,7 @@ app.post('/api/dashboard/events/delete', (req, res) => {
   const todayCustom = (data.customEvents || []).filter(e => e.date === todayStr);
   data.calendar = [...todaySynced, ...todayCustom];
 
-  fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+  saveDashboard(data);
   res.json({ success: true, calendar: data.calendar, customEvents: data.customEvents });
 });
 
@@ -451,7 +571,7 @@ app.post('/api/dashboard/priorities/toggle', (req, res) => {
   const priority = data.priorities.find(p => p.id === id);
   if (priority) {
     priority.checked = !priority.checked;
-    fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+    saveDashboard(data);
     return res.json({ success: true, priorities: data.priorities });
   }
   res.status(404).json({ error: 'Priority item not found' });
@@ -474,7 +594,7 @@ app.post('/api/dashboard/priorities', (req, res) => {
     data.priorities = [];
   }
   data.priorities.push(newItem);
-  fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+  saveDashboard(data);
   res.json({ success: true, priorities: data.priorities });
 });
 
@@ -488,7 +608,7 @@ app.post('/api/dashboard/priorities/reorder', (req, res) => {
   }
   const data = getDashboardData();
   data.priorityListOrder = order;
-  fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+  saveDashboard(data);
   res.json({ success: true, priorityListOrder: data.priorityListOrder });
 });
 
@@ -498,7 +618,7 @@ app.post('/api/dashboard/priorities/delete', (req, res) => {
   const data = getDashboardData();
   if (data.priorities) {
     data.priorities = data.priorities.filter(p => p.id !== id);
-    fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+    saveDashboard(data);
   }
   res.json({ success: true, priorities: data.priorities || [] });
 });
@@ -608,7 +728,7 @@ app.post('/api/weekly-content/planner', (req, res) => {
     planner.push(newItem);
   }
 
-  fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+  saveDashboard(data);
   res.json({ success: true, weeklyContent: data.weeklyContent });
 });
 
@@ -624,7 +744,7 @@ app.post('/api/weekly-content/planner/delete', (req, res) => {
       if (day && item.day === day && !item.date && !date) return false;
       return true;
     });
-    fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+    saveDashboard(data);
   }
 
   res.json({ success: true, weeklyContent: data.weeklyContent || { instagramAnalyzed: [], contentPlanner: [], brainstormIdeas: [] } });
@@ -666,7 +786,7 @@ app.post('/api/weekly-content/brainstorm', (req, res) => {
     ideas.push(newItem);
   }
   
-  fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+  saveDashboard(data);
   res.json({ success: true, weeklyContent: data.weeklyContent });
 });
 
@@ -677,7 +797,7 @@ app.post('/api/weekly-content/brainstorm/delete', (req, res) => {
   
   if (data.weeklyContent && data.weeklyContent.brainstormIdeas) {
     data.weeklyContent.brainstormIdeas = data.weeklyContent.brainstormIdeas.filter(item => item.id !== id);
-    fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+    saveDashboard(data);
   }
   
   res.json({ success: true, weeklyContent: data.weeklyContent || { instagramAnalyzed: [], contentPlanner: [], brainstormIdeas: [] } });
@@ -694,7 +814,7 @@ app.post('/api/weekly-content/brainstorm/reorder', (req, res) => {
     data.weeklyContent = { instagramAnalyzed: [], contentPlanner: [], brainstormIdeas: [] };
   }
   data.weeklyContent.brainstormIdeas = ideas;
-  fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+  saveDashboard(data);
   res.json({ success: true, weeklyContent: data.weeklyContent });
 });
 
@@ -725,7 +845,7 @@ app.post('/api/weekly-content/planner/revert', (req, res) => {
       // Remove from planner
       data.weeklyContent.contentPlanner.splice(itemIndex, 1);
       
-      fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+      saveDashboard(data);
     }
   }
   
@@ -837,7 +957,7 @@ app.post('/api/goals', (req, res) => {
     board[yearStr][qStr] = goals;
 
     data.actionBoard = board;
-    fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+    saveDashboard(data);
     res.json({ success: true, goals: board[yearStr][qStr] });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -866,7 +986,7 @@ app.post('/api/action-board/goals', (req, res) => {
     board[year][quarter] = goals;
 
     data.actionBoard = board;
-    fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+    saveDashboard(data);
     res.json({ success: true, actionBoard: board });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -954,7 +1074,7 @@ app.post('/api/ai-generate', async (req, res) => {
       }
     };
 
-    fs.writeFileSync(CACHE_PATH, JSON.stringify(updatedData, null, 2), 'utf8');
+    saveDashboard(updatedData);
     console.log('[AI Generate] Cache updated with AI-generated content');
 
     res.json({ success: true, data: updatedData });
@@ -967,6 +1087,7 @@ app.post('/api/ai-generate', async (req, res) => {
 
 // ── /api/newsletter/refresh — trigger manual feed fetch ──────────────────────
 app.post('/api/newsletter/refresh', async (req, res) => {
+  if (!newsletterDb) return featureDisabled(res, 'newsletter');
   try {
     console.log('[server] Manual newsletter feed refresh triggered');
     const newCount = await newsletterDb.fetchAllFeeds();
@@ -993,7 +1114,7 @@ app.post('/api/location', async (req, res) => {
     const data = getDashboardData();
     data.location = { lat, lon, label: label || null };
     data.weather = await getWeatherForLocation(data.location, null);
-    fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+    saveDashboard(data);
 
     res.json({ success: true, weather: data.weather, location: data.location });
   } catch (err) {
@@ -1004,13 +1125,8 @@ app.post('/api/location', async (req, res) => {
 
 // ── Design Board (canvas drawing + sticky notes) ────────────────────────────
 function getDesignBoard() {
-  if (fs.existsSync(DESIGN_BOARD_PATH)) {
-    try {
-      return JSON.parse(fs.readFileSync(DESIGN_BOARD_PATH, 'utf8'));
-    } catch (e) {
-      console.error('Error reading design-board.json, resetting to defaults', e);
-    }
-  }
+  const stored = storage.get('designBoard');
+  if (stored) return stored;
   return { drawing: null, notes: [] };
 }
 
@@ -1025,7 +1141,7 @@ app.post('/api/design-board', (req, res) => {
       drawing: drawing !== undefined ? drawing : getDesignBoard().drawing,
       notes: Array.isArray(notes) ? notes : []
     };
-    fs.writeFileSync(DESIGN_BOARD_PATH, JSON.stringify(board), 'utf8');
+    saveDesignBoard(board);
     res.json({ success: true });
   } catch (err) {
     console.error('[server] Design board save error:', err.message);
@@ -1036,6 +1152,7 @@ app.post('/api/design-board', (req, res) => {
 // ── Handwriting recognition (Design Board ink -> text via Microsoft TrOCR) ──
 // Runs fully locally through transformers.js/ONNX — no external API, no key.
 app.post('/api/design-board/recognize', async (req, res) => {
+  if (!featureOn('ocr')) return featureDisabled(res, 'ocr');
   try {
     const { image } = req.body;
     if (!image) {
@@ -1053,6 +1170,7 @@ app.post('/api/design-board/recognize', async (req, res) => {
 // ── /api/newsletter/browse — many articles per category (DB-backed, paginated) ──
 // Returns a large flat list so the frontend can page through ~5 pages per category.
 app.get('/api/newsletter/browse', (req, res) => {
+  if (!newsletterDb) return featureDisabled(res, 'newsletter');
   try {
     const perCategory = Math.min(parseInt(req.query.perCategory, 10) || 30, 60);
 
@@ -1097,6 +1215,7 @@ app.get('/api/newsletter/browse', (req, res) => {
 
 // ── /api/newsletter/read — persist read/unread state ────────────────────────
 app.post('/api/newsletter/read', (req, res) => {
+  if (!newsletterDb) return featureDisabled(res, 'newsletter');
   try {
     const { id, read } = req.body;
     if (!id) return res.status(400).json({ error: 'id is required' });
@@ -1109,6 +1228,7 @@ app.post('/api/newsletter/read', (req, res) => {
 
 // ── /api/newsletter/star — persist star state (starred survive weekly reset) ─
 app.post('/api/newsletter/star', (req, res) => {
+  if (!newsletterDb) return featureDisabled(res, 'newsletter');
   try {
     const { id, starred } = req.body;
     if (!id) return res.status(400).json({ error: 'id is required' });
@@ -1121,6 +1241,7 @@ app.post('/api/newsletter/star', (req, res) => {
 
 // ── /api/newsletter/stats — DB stats ────────────────────────────────────────
 app.get('/api/newsletter/stats', (req, res) => {
+  if (!newsletterDb) return featureDisabled(res, 'newsletter');
   try {
     const stats = newsletterDb.getStats();
     res.json(stats || { error: 'DB not available' });
@@ -1130,11 +1251,17 @@ app.get('/api/newsletter/stats', (req, res) => {
 });
 
 if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-    // Start newsletter feed poller (fetches feeds every 60 min)
-    newsletterDb.startFeedPoller();
-  });
+  // Önce kalıcı depolamayı belleğe yükle, sonra dinlemeye başla.
+  storage.init()
+    .catch((err) => console.error('[storage] init failed, continuing with empty state:', err.message))
+    .finally(() => {
+      app.listen(PORT, () => {
+        console.log(`Server running on http://localhost:${PORT}`);
+        console.log(`[features] Aktif: ${[...ENABLED_FEATURES].join(', ') || '(yalnızca çekirdek)'}`);
+        // Start newsletter feed poller (fetches feeds every 60 min) — yalnızca açıksa
+        if (newsletterDb) newsletterDb.startFeedPoller();
+      });
+    });
 }
 
 module.exports = app;
