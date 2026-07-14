@@ -25,16 +25,26 @@ export function isLoggedIn() {
 }
 
 // Giriş: parolayı backend'e gönderir, başarılıysa token'ı saklar.
+// Backend'e hiç ulaşılamıyorsa (404/502/503 veya ağ hatası) bunu parola
+// hatasından ayırt edip anlamlı mesaj döner.
 export async function login(password) {
-  const res = await fetch('/api/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password }),
-  });
+  let res;
+  try {
+    res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+  } catch {
+    return { ok: false, error: 'Sunucuya ulaşılamıyor — internet bağlantısını kontrol edin' };
+  }
   const data = await res.json().catch(() => ({}));
   if (res.ok && data.success && data.token) {
     setToken(data.token);
     return { ok: true };
+  }
+  if (res.status === 404 || res.status === 502 || res.status === 503) {
+    return { ok: false, error: 'Sunucu şu an erişilebilir değil (backend uyanıyor olabilir) — birazdan tekrar deneyin' };
   }
   return { ok: false, error: data.error || 'Giriş başarısız' };
 }
