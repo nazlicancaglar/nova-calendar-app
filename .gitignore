@@ -28,3 +28,6 @@ backend/design-board.json
 .DS_Store
 Thumbs.db
 RENDER_ENV_PASTE.txt
+
+# Vercel CLI link verisi
+.vercel
