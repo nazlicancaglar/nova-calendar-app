@@ -1,4 +1,4 @@
-const CACHE_NAME = 'nova-workspace-v1';
+const CACHE_NAME = 'nova-workspace-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -35,7 +35,9 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Dynamic cache-first / stale-while-revalidate strategy for same-origin requests
+// Network-first strategy for same-origin requests: always serve fresh code
+// when online, fall back to the cache only when the network is unavailable.
+// (Cache-first here previously served stale JS after every deploy/edit.)
 self.addEventListener('fetch', (event) => {
   const req = event.request;
 
@@ -45,9 +47,8 @@ self.addEventListener('fetch', (event) => {
   }
 
   event.respondWith(
-    caches.match(req).then((cachedResponse) => {
-      // Fetch from network to update the cache in the background
-      const fetchPromise = fetch(req).then((networkResponse) => {
+    fetch(req)
+      .then((networkResponse) => {
         if (networkResponse && networkResponse.status === 200) {
           const cacheCopy = networkResponse.clone();
           caches.open(CACHE_NAME).then((cache) => {
@@ -55,17 +56,7 @@ self.addEventListener('fetch', (event) => {
           });
         }
         return networkResponse;
-      }).catch(() => {
-        // Ignore network errors in background revalidation
-      });
-
-      // If cached, return immediately and let fetch update it in background
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-
-      // If not cached, wait for the network fetch
-      return fetchPromise;
-    })
+      })
+      .catch(() => caches.match(req))
   );
 });

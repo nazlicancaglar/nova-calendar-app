@@ -69,6 +69,25 @@ export default function WeeklyContent({ lang, weeklyData, onRefresh }) {
 
   const { instagramAnalyzed, contentPlanner, weeklyDigest } = weeklyData;
   const brainstormIdeas = weeklyData.brainstormIdeas || [];
+
+  // The planner lists ONLY the current week's (Mon–Sun) content — items dated
+  // in past or future weeks live in the Calendar, not here. Legacy items with
+  // just a day name (no date) belong to the current week by construction.
+  const plannerThisWeek = (() => {
+    const today = new Date();
+    const day = today.getDay();
+    const diff = today.getDate() - day + (day === 0 ? -6 : 1);
+    const monday = new Date(today); monday.setDate(diff); monday.setHours(0, 0, 0, 0);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6); sunday.setHours(23, 59, 59, 999);
+
+    return (contentPlanner || []).filter(item => {
+      if (item.type === 'task') return false;
+      if (!item.date) return true;
+      const parts = item.date.split('-');
+      const itemDate = new Date(parts[0], parts[1] - 1, parts[2]);
+      return itemDate >= monday && itemDate <= sunday;
+    });
+  })();
   const displayedIdeas = activeFormatFilter === 'All' 
     ? brainstormIdeas 
     : brainstormIdeas.filter(idea => idea.format === activeFormatFilter);
@@ -366,7 +385,7 @@ export default function WeeklyContent({ lang, weeklyData, onRefresh }) {
         </div>
 
         <div className="planner-grid">
-          {contentPlanner && contentPlanner.filter(item => item.type !== 'task').map((dayPlan, idx) => {
+          {plannerThisWeek.map((dayPlan, idx) => {
             const isExpanded = expandedDay === (dayPlan.day || dayPlan.date || idx);
             const dayKey = dayPlan.day || dayPlan.date || idx;
             return (
@@ -463,7 +482,7 @@ export default function WeeklyContent({ lang, weeklyData, onRefresh }) {
               </div>
             );
           })}
-          {(!contentPlanner || contentPlanner.filter(item => item.type !== 'task').length === 0) && (
+          {plannerThisWeek.length === 0 && (
             <div style={{ textAlign: 'center', padding: '24px', background: 'var(--bg-card)', borderRadius: '12px', border: '1px solid var(--border-card)', color: 'var(--text-muted)' }}>
               {t.noContentPlanned}
             </div>

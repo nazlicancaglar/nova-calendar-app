@@ -48,27 +48,48 @@ export default function App() {
     fetchDashboardData();
   }, []);
 
-  // Ask the browser for the real location once per load and push it to the
+  // Ask the browser for the real location once (ever) and push it to the
   // backend so weather reflects where the user actually is (fixes the old
-  // hardcoded-Vancouver bug). Silently no-ops if permission is denied —
-  // the backend then falls back to IP-based geolocation on its own.
+  // hardcoded-Vancouver bug). The result is cached in localStorage so the
+  // browser's permission prompt only fires a single time across visits —
+  // subsequent loads just resend the cached coords. Silently no-ops if
+  // permission is denied — the backend then falls back to IP-based
+  // geolocation on its own.
   useEffect(() => {
+    const sendLocation = (lat, lon) => {
+      fetch('/api/location', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lat, lon })
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.success && data.weather) {
+            setDashboardData((prev) => (prev ? { ...prev, weather: data.weather } : prev));
+          }
+        })
+        .catch((err) => console.error('Error saving location:', err));
+    };
+
+    const cachedRaw = localStorage.getItem('nova_location');
+    if (cachedRaw) {
+      try {
+        const cached = JSON.parse(cachedRaw);
+        if (cached && typeof cached.lat === 'number' && typeof cached.lon === 'number') {
+          sendLocation(cached.lat, cached.lon);
+          return;
+        }
+      } catch (e) {
+        // fall through to re-request below
+      }
+    }
+
     if (!('geolocation' in navigator)) return;
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const { latitude, longitude } = position.coords;
-        fetch('/api/location', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ lat: latitude, lon: longitude })
-        })
-          .then((res) => res.json())
-          .then((data) => {
-            if (data.success && data.weather) {
-              setDashboardData((prev) => (prev ? { ...prev, weather: data.weather } : prev));
-            }
-          })
-          .catch((err) => console.error('Error saving location:', err));
+        localStorage.setItem('nova_location', JSON.stringify({ lat: latitude, lon: longitude }));
+        sendLocation(latitude, longitude);
       },
       (err) => console.warn('Geolocation unavailable/denied:', err.message),
       { timeout: 10000, maximumAge: 60 * 60 * 1000 }
@@ -181,17 +202,32 @@ export default function App() {
       });
   };
 
-  // Add new priority item
+  // Add new priority item — always created as a calendar task dated today,
+  // so Top Priorities Today and the Calendar's today cell stay in sync (a
+  // task added from either side always shows up in both).
   const handleAddPriority = (text, priority) => {
-    fetch('/api/dashboard/priorities', {
+    const todayStr = (() => {
+      const d = new Date();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${d.getFullYear()}-${mm}-${dd}`;
+    })();
+
+    fetch('/api/weekly-content/planner', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, priority }),
+      body: JSON.stringify({
+        type: 'task',
+        date: todayStr,
+        topic: text,
+        priority: priority || 'MED',
+        isManual: true
+      }),
     })
       .then((res) => res.json())
       .then((data) => {
         if (data.success) {
-          setDashboardData((prev) => ({ ...prev, priorities: data.priorities }));
+          fetchDashboardData(true);
         }
       })
       .catch((err) => {
@@ -201,6 +237,25 @@ export default function App() {
 
   // Delete priority item
   const handleDeletePriority = (id) => {
+    if (id.startsWith('cal-')) {
+      const originalId = id.replace('cal-', '');
+      fetch('/api/weekly-content/planner/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: originalId }),
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.success) {
+            fetchDashboardData(true);
+          }
+        })
+        .catch((err) => {
+          console.error('Error deleting calendar task:', err);
+        });
+      return;
+    }
+
     // Optimistic UI update
     if (dashboardData && dashboardData.priorities) {
       const updatedPriorities = dashboardData.priorities.filter((item) => item.id !== id);
@@ -223,8 +278,28 @@ export default function App() {
       });
   };
 
+  // Persist the user's manual up/down order for the combined Top Priorities
+  // list (static priorities + today's calendar tasks together)
+  const handleReorderPriorities = (orderIds) => {
+    setDashboardData((prev) => (prev ? { ...prev, priorityListOrder: orderIds } : prev));
+    fetch('/api/dashboard/priorities/reorder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order: orderIds }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success) {
+          setDashboardData((prev) => (prev ? { ...prev, priorityListOrder: data.priorityListOrder } : prev));
+        }
+      })
+      .catch((err) => {
+        console.error('Error reordering priorities:', err);
+      });
+  };
+
   return (
-    <div className="app-container" style={{ position: 'relative' }}>
+    <div className={`app-container${activeTab === 'calendar' ? ' app-container-wide' : ''}`} style={{ position: 'relative' }}>
       
       {/* Floating Theme Selector (outside navbar) */}
       <div 
@@ -378,6 +453,7 @@ export default function App() {
             <Target size={18} />
             <span className="nav-text">{t.actionBoard}</span>
           </button>
+          {/* Design tab hidden for now — not shipping yet. Restore this block to re-enable.
           <button
             className={`nav-item ${activeTab === 'design' ? 'active' : ''}`}
             onClick={() => setActiveTab('design')}
@@ -385,6 +461,7 @@ export default function App() {
             <Palette size={18} />
             <span className="nav-text">{t.design}</span>
           </button>
+          */}
         </div>
       </nav>
 
@@ -399,9 +476,10 @@ export default function App() {
             <Dashboard 
               lang={lang}
               data={dashboardData} 
-              onTogglePriority={handleTogglePriority} 
+              onTogglePriority={handleTogglePriority}
               onAddPriority={handleAddPriority}
               onDeletePriority={handleDeletePriority}
+              onReorderPriorities={handleReorderPriorities}
               onSync={onSync => handleSyncData()}
               syncing={syncing}
               onRefresh={fetchDashboardData}
@@ -432,6 +510,7 @@ export default function App() {
               lang={lang}
               allEvents={dashboardData ? dashboardData.allCalendarEvents : []}
               contentPlanner={dashboardData && dashboardData.weeklyContent ? dashboardData.weeklyContent.contentPlanner : []}
+              brainstormIdeas={dashboardData && dashboardData.weeklyContent ? dashboardData.weeklyContent.brainstormIdeas : []}
               onRefresh={fetchDashboardData}
             />
           )}

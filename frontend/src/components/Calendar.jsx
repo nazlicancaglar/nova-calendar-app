@@ -1,25 +1,64 @@
 import React, { useState } from 'react';
-import { ChevronLeft, ChevronRight, Plus, Trash2, Clock, Calendar as CalendarIcon, FileText, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Plus, Trash2, Clock, Calendar as CalendarIcon, FileText, X, Lightbulb, CalendarPlus, Pencil } from 'lucide-react';
 import { translations } from '../translations';
+import PlanItemModal from './PlanItemModal';
+import BrainstormIdeaModal from './BrainstormIdeaModal';
 
-export default function CalendarView({ lang, allEvents = [], contentPlanner = [], onRefresh }) {
+const HOURS = Array.from({ length: 24 }, (_, i) => i);
+const HOUR_HEIGHT = 48; // px per hour row in the week hour-grid
+
+const formatHourLabel = (h) => {
+  if (h === 0) return '12 AM';
+  if (h === 12) return '12 PM';
+  return h < 12 ? `${h} AM` : `${h - 12} PM`;
+};
+
+// Parses "3:00 PM - 4:00 PM" into {startMin, endMin} minutes-from-midnight.
+// Returns null for "All Day" or anything unparseable.
+const parseTimeRange = (timeStr) => {
+  if (!timeStr) return null;
+  const match = timeStr.match(/(\d{1,2}):(\d{2})\s*(AM|PM)\s*-\s*(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+  if (!match) return null;
+  const toMinutes = (h, m, ampm) => {
+    let hour = parseInt(h, 10) % 12;
+    if (ampm.toUpperCase() === 'PM') hour += 12;
+    return hour * 60 + parseInt(m, 10);
+  };
+  const startMin = toMinutes(match[1], match[2], match[3]);
+  let endMin = toMinutes(match[4], match[5], match[6]);
+  if (endMin <= startMin) endMin = Math.min(startMin + 30, 24 * 60);
+  return { startMin, endMin };
+};
+
+const PLANNER_ITEM_DURATION_MIN = 30;
+
+// Converts a 24h "HH:MM" input value (from <input type="time">) into
+// {startMin, endMin} for positioning on the week hour-grid.
+const parseHHMM = (timeStr) => {
+  if (!timeStr) return null;
+  const match = timeStr.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const startMin = parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
+  const endMin = Math.min(startMin + PLANNER_ITEM_DURATION_MIN, 24 * 60);
+  return { startMin, endMin };
+};
+
+export default function CalendarView({ lang, allEvents = [], contentPlanner = [], brainstormIdeas = [], onRefresh }) {
   const t = translations[lang] || translations.en;
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDateStr, setSelectedDateStr] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalMode, setModalMode] = useState('add'); // 'add', 'edit', 'view-event'
   const [selectedEvent, setSelectedEvent] = useState(null);
-
-  // Form states for Content Plan & Tasks
-  const [planId, setPlanId] = useState('');
-  const [planTopic, setPlanTopic] = useState('');
-  const [planFormat, setPlanFormat] = useState('Reels');
-  const [planStatus, setPlanStatus] = useState('Planned');
-  const [planOutline, setPlanOutline] = useState('');
-  const [planType, setPlanType] = useState('content'); // 'content' or 'task'
-  const [taskPriority, setTaskPriority] = useState('MED');
-  const [taskChecked, setTaskChecked] = useState(false);
-  const [taskNotes, setTaskNotes] = useState('');
+  const [editingItem, setEditingItem] = useState(null); // full item object when modalMode === 'edit'
+  const [addDefaultType, setAddDefaultType] = useState('content'); // which tab the add modal opens on
+  const [assigningIdeaId, setAssigningIdeaId] = useState(null);
+  const [isIdeaModalOpen, setIsIdeaModalOpen] = useState(false);
+  const [ideaModalMode, setIdeaModalMode] = useState('add');
+  const [editingIdea, setEditingIdea] = useState(null);
+  const [viewMode, setViewMode] = useState('month'); // 'month' or 'week'
+  const [draggedItem, setDraggedItem] = useState(null);
+  const [dragOverKey, setDragOverKey] = useState(null);
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
@@ -31,18 +70,42 @@ export default function CalendarView({ lang, allEvents = [], contentPlanner = []
     return `${year}-${mm}-${dd}`;
   };
 
-  // Month navigation
-  const prevMonth = () => {
-    setCurrentDate(new Date(year, month - 1, 1));
+  // Navigation: shifts by month or by week depending on the active view
+  const prevPeriod = () => {
+    if (viewMode === 'week') {
+      const d = new Date(currentDate);
+      d.setDate(d.getDate() - 7);
+      setCurrentDate(d);
+    } else {
+      setCurrentDate(new Date(year, month - 1, 1));
+    }
   };
 
-  const nextMonth = () => {
-    setCurrentDate(new Date(year, month + 1, 1));
+  const nextPeriod = () => {
+    if (viewMode === 'week') {
+      const d = new Date(currentDate);
+      d.setDate(d.getDate() + 7);
+      setCurrentDate(d);
+    } else {
+      setCurrentDate(new Date(year, month + 1, 1));
+    }
   };
 
   // Get days in month
   const getDaysInMonth = (year, month) => {
     return new Date(year, month + 1, 0).getDate();
+  };
+
+  // Get Monday-Sunday range for the week containing a given date
+  const getWeekRangeOf = (dateObj) => {
+    const d = new Date(dateObj);
+    const day = d.getDay();
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+    const monday = new Date(d.setDate(diff));
+    monday.setHours(0, 0, 0, 0);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    return { monday, sunday };
   };
 
   // Get week range of today (system time) to match legacy "day: Monday" items
@@ -84,18 +147,11 @@ export default function CalendarView({ lang, allEvents = [], contentPlanner = []
     return { calendarEvents, contentItems };
   };
 
-  // Open modal to add plan
-  const handleAddPlanClick = (dateStr) => {
+  // Open modal to add plan (defaultType: which tab the modal opens on)
+  const handleAddPlanClick = (dateStr, defaultType = 'content') => {
     setSelectedDateStr(dateStr);
-    setPlanId('');
-    setPlanTopic('');
-    setPlanFormat('Reels');
-    setPlanStatus('Planned');
-    setPlanOutline('');
-    setPlanType('content');
-    setTaskPriority('MED');
-    setTaskChecked(false);
-    setTaskNotes('');
+    setEditingItem(null);
+    setAddDefaultType(defaultType);
     setModalMode('add');
     setIsModalOpen(true);
   };
@@ -103,15 +159,7 @@ export default function CalendarView({ lang, allEvents = [], contentPlanner = []
   // Open modal to edit plan
   const handleEditPlanClick = (item, dateStr) => {
     setSelectedDateStr(dateStr || item.date || '');
-    setPlanId(item.id || '');
-    setPlanTopic(item.topic || '');
-    setPlanFormat(item.format || 'Reels');
-    setPlanStatus(item.status || 'Planned');
-    setPlanOutline(item.outline || '');
-    setPlanType(item.type || 'content');
-    setTaskPriority(item.priority || 'MED');
-    setTaskChecked(item.checked || false);
-    setTaskNotes(item.notes || '');
+    setEditingItem(item);
     setModalMode('edit');
     setIsModalOpen(true);
   };
@@ -121,40 +169,6 @@ export default function CalendarView({ lang, allEvents = [], contentPlanner = []
     setSelectedEvent(event);
     setModalMode('view-event');
     setIsModalOpen(true);
-  };
-
-  // Save Content Plan
-  const handleSavePlan = (e) => {
-    e.preventDefault();
-    if (!planTopic.trim()) return;
-
-    const bodyData = {
-      id: planId || undefined,
-      date: selectedDateStr,
-      topic: planTopic,
-      format: planFormat,
-      status: planStatus,
-      outline: planOutline,
-      notes: taskNotes,
-      isManual: true,
-      type: planType,
-      priority: taskPriority,
-      checked: taskChecked
-    };
-
-    fetch('/api/weekly-content/planner', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(bodyData)
-    })
-      .then(res => res.json())
-      .then(data => {
-        if (data.success) {
-          setIsModalOpen(false);
-          if (onRefresh) onRefresh();
-        }
-      })
-      .catch(err => console.error('Error saving content plan:', err));
   };
 
   // Toggle calendar task status directly
@@ -172,29 +186,10 @@ export default function CalendarView({ lang, allEvents = [], contentPlanner = []
       .then(res => res.json())
       .then(data => {
         if (data.success) {
-          if (onRefresh) onRefresh();
+          if (onRefresh) onRefresh(true);
         }
       })
       .catch(err => console.error('Error toggling calendar task:', err));
-  };
-
-  // Delete Content Plan
-  const handleDeletePlan = () => {
-    if (!planId) return;
-
-    fetch('/api/weekly-content/planner/delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: planId })
-    })
-      .then(res => res.json())
-      .then(data => {
-        if (data.success) {
-          setIsModalOpen(false);
-          if (onRefresh) onRefresh();
-        }
-      })
-      .catch(err => console.error('Error deleting content plan:', err));
   };
 
   // Generate calendar grid array
@@ -225,6 +220,18 @@ export default function CalendarView({ lang, allEvents = [], contentPlanner = []
       cells.push({ date: nextDate, isCurrentMonth: false });
     }
 
+    return cells;
+  };
+
+  // Generate a single Monday-Sunday row for week view
+  const generateWeekGrid = () => {
+    const { monday } = getWeekRangeOf(currentDate);
+    const cells = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(monday);
+      d.setDate(monday.getDate() + i);
+      cells.push({ date: d, isCurrentMonth: true });
+    }
     return cells;
   };
 
@@ -260,19 +267,170 @@ export default function CalendarView({ lang, allEvents = [], contentPlanner = []
       .then(res => res.json())
       .then(data => {
         if (data.success) {
-          if (onRefresh) onRefresh();
+          if (onRefresh) onRefresh(true);
         }
       })
       .catch(err => console.error('Error rescheduling task:', err));
   };
 
-  const gridCells = generateGrid();
+  // Drag-and-drop: move a content/task item to a new date, optionally a new time
+  // (pass newTime='' to drop it into the all-day row / clear its time)
+  const handleMoveItem = (item, newDate, newTime) => {
+    if (!item || !newDate) return;
+    const bodyData = {
+      ...item,
+      date: newDate,
+      time: newTime !== undefined ? newTime : (item.time || '')
+    };
+
+    fetch('/api/weekly-content/planner', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bodyData)
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          if (onRefresh) onRefresh(true);
+        }
+      })
+      .catch(err => console.error('Error moving item:', err));
+  };
+
+  const handleItemDragStart = (item) => (e) => {
+    e.stopPropagation();
+    setDraggedItem(item);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', item.id || '');
+  };
+
+  const handleItemDragEnd = () => {
+    setDraggedItem(null);
+    setDragOverKey(null);
+  };
+
+  const handleCellDragOver = (cellKey) => (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dragOverKey !== cellKey) setDragOverKey(cellKey);
+  };
+
+  const handleCellDragLeave = (cellKey) => () => {
+    setDragOverKey((prev) => (prev === cellKey ? null : prev));
+  };
+
+  // Drop on a month cell: change date, keep whatever time (if any) it already had
+  const handleMonthCellDrop = (cellDateStr) => (e) => {
+    e.preventDefault();
+    setDragOverKey(null);
+    if (draggedItem) handleMoveItem(draggedItem, cellDateStr, draggedItem.time || '');
+    setDraggedItem(null);
+  };
+
+  // Drop on the week view's all-day row: change date, clear any fixed time
+  const handleAllDayCellDrop = (cellDateStr) => (e) => {
+    e.preventDefault();
+    setDragOverKey(null);
+    if (draggedItem) handleMoveItem(draggedItem, cellDateStr, '');
+    setDraggedItem(null);
+  };
+
+  // Drop on an hour column: change date AND derive a time from the drop position
+  const handleHourColDrop = (cellDateStr) => (e) => {
+    e.preventDefault();
+    setDragOverKey(null);
+    if (draggedItem) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const offsetY = Math.max(0, e.clientY - rect.top);
+      const rawMinutes = (offsetY / HOUR_HEIGHT) * 60;
+      const snappedMinutes = Math.min(23 * 60 + 45, Math.round(rawMinutes / 15) * 15);
+      const hh = Math.floor(snappedMinutes / 60).toString().padStart(2, '0');
+      const mm = (snappedMinutes % 60).toString().padStart(2, '0');
+      handleMoveItem(draggedItem, cellDateStr, `${hh}:${mm}`);
+    }
+    setDraggedItem(null);
+  };
+
+  // Brainstorm sidebar handlers (park ideas/tasks with no date yet)
+  const handleOpenAddIdeaModal = () => {
+    setEditingIdea(null);
+    setIdeaModalMode('add');
+    setIsIdeaModalOpen(true);
+  };
+
+  const handleOpenEditIdeaModal = (idea) => {
+    setEditingIdea(idea);
+    setIdeaModalMode('edit');
+    setIsIdeaModalOpen(true);
+  };
+
+  const handleDeleteBrainstormIdea = (id) => {
+    fetch('/api/weekly-content/brainstorm/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id })
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          if (onRefresh) onRefresh(true);
+        }
+      })
+      .catch(err => console.error('Error deleting brainstorm idea:', err));
+  };
+
+  const handleAssignBrainstormDate = async (idea, dateStr) => {
+    if (!dateStr) return;
+    try {
+      const isTask = idea.type === 'task';
+      const resPlanner = await fetch('/api/weekly-content/planner', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          date: dateStr,
+          topic: idea.title,
+          format: idea.format || 'Reels',
+          outline: isTask ? '' : (idea.details || ''),
+          notes: isTask ? (idea.details || '') : '',
+          status: 'Planned',
+          isManual: true,
+          type: isTask ? 'task' : 'content',
+          priority: idea.priority || 'MED'
+        })
+      });
+      if (!resPlanner.ok) throw new Error('Planner save failed');
+
+      const resDelete = await fetch('/api/weekly-content/brainstorm/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: idea.id })
+      });
+      if (!resDelete.ok) throw new Error('Brainstorm delete failed');
+
+      setAssigningIdeaId(null);
+      if (onRefresh) onRefresh(true);
+    } catch (err) {
+      console.error('Error assigning date to brainstorm idea:', err);
+    }
+  };
+
+  const gridCells = viewMode === 'week' ? generateWeekGrid() : generateGrid();
   const weekDays = t.weekDays || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
   const monthNames = t.months || [
     'January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December'
   ];
+
+  // Header title: month/year for month view, "D–D Mon Year" range for week view
+  const headerTitle = (() => {
+    if (viewMode !== 'week') return `${monthNames[month]} ${year}`;
+    const { monday, sunday } = getWeekRangeOf(currentDate);
+    if (monday.getMonth() === sunday.getMonth()) {
+      return `${monday.getDate()} – ${sunday.getDate()} ${monthNames[monday.getMonth()]} ${monday.getFullYear()}`;
+    }
+    return `${monday.getDate()} ${monthNames[monday.getMonth()]} – ${sunday.getDate()} ${monthNames[sunday.getMonth()]} ${sunday.getFullYear()}`;
+  })();
 
   return (
     <div className="calendar-widget-container">
@@ -281,20 +439,49 @@ export default function CalendarView({ lang, allEvents = [], contentPlanner = []
       <div className="calendar-widget-header">
         <div className="calendar-title-wrapper">
           <CalendarIcon size={24} style={{ color: 'var(--color-coral-dark)' }} />
-          <h2>{monthNames[month]} {year}</h2>
+          <h2>{headerTitle}</h2>
         </div>
         <div className="calendar-nav-buttons">
-          <button className="nav-btn" onClick={prevMonth}>
+          <div className="view-mode-switch">
+            <button
+              type="button"
+              className={`view-mode-btn ${viewMode === 'month' ? 'active' : ''}`}
+              onClick={() => setViewMode('month')}
+            >
+              {t.monthView || 'Month'}
+            </button>
+            <button
+              type="button"
+              className={`view-mode-btn ${viewMode === 'week' ? 'active' : ''}`}
+              onClick={() => setViewMode('week')}
+            >
+              {t.weekView || 'Week'}
+            </button>
+          </div>
+          <button
+            type="button"
+            className="add-task-btn"
+            onClick={() => {
+              const now = new Date();
+              handleAddPlanClick(formatDateStr(now.getFullYear(), now.getMonth(), now.getDate()), 'task');
+            }}
+          >
+            <Plus size={14} /><span>{t.addTask}</span>
+          </button>
+          <button className="nav-btn" onClick={prevPeriod}>
             <ChevronLeft size={16} />
           </button>
           <button className="nav-btn-today" onClick={() => setCurrentDate(new Date())}>
             {t.today}
           </button>
-          <button className="nav-btn" onClick={nextMonth}>
+          <button className="nav-btn" onClick={nextPeriod}>
             <ChevronRight size={16} />
           </button>
         </div>
       </div>
+
+      <div className="calendar-main-layout">
+      <div className="calendar-main-col">
 
       {/* Legend showing sources */}
       <div className="calendar-legend">
@@ -317,6 +504,180 @@ export default function CalendarView({ lang, allEvents = [], contentPlanner = []
       </div>
 
       {/* Grid Container */}
+      {viewMode === 'week' ? (
+        <div className="week-hourgrid">
+          {/* Day headers with date numbers */}
+          <div className="week-hourgrid-header-row">
+            <div className="week-hourgrid-gutter-cell" />
+            {gridCells.map((cell, index) => {
+              const isToday = new Date().toDateString() === cell.date.toDateString();
+              return (
+                <div className={`week-day-header ${isToday ? 'today' : ''}`} key={index}>
+                  <span className="week-day-name">{weekDays[index]}</span>
+                  <span className="week-day-num">{cell.date.getDate()}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* All-day row: content plan/tasks (no fixed time) + all-day calendar events */}
+          <div className="week-hourgrid-allday-row">
+            <div className="week-hourgrid-gutter-label">{t.allDay || 'All-day'}</div>
+            {gridCells.map((cell, index) => {
+              const cellDateStr = formatDateStr(cell.date.getFullYear(), cell.date.getMonth(), cell.date.getDate());
+              const { calendarEvents, contentItems } = getItemsForDate(cell.date);
+              const allDayEvents = calendarEvents.filter(e => e.time === 'All Day');
+              const untimedContentItems = contentItems.filter(item => !item.time);
+              const allDayKey = `wa-${cellDateStr}`;
+              return (
+                <div
+                  className={`week-allday-cell ${dragOverKey === allDayKey ? 'drag-over-cell' : ''}`}
+                  key={index}
+                  onDragOver={handleCellDragOver(allDayKey)}
+                  onDragLeave={handleCellDragLeave(allDayKey)}
+                  onDrop={handleAllDayCellDrop(cellDateStr)}
+                >
+                  {allDayEvents.map((evt, eIdx) => {
+                    const isGoogle = evt.source === 'Google Calendar';
+                    return (
+                      <div
+                        className={`event-pill ${isGoogle ? 'pill-google' : 'pill-outlook'}`}
+                        key={`wevt-${eIdx}`}
+                        onClick={() => handleViewEventClick(evt)}
+                        title={evt.title}
+                      >
+                        {evt.title}
+                      </div>
+                    );
+                  })}
+                  {untimedContentItems.map((item, cIdx) => {
+                    const isTask = item.type === 'task';
+                    if (isTask) {
+                      return (
+                        <div
+                          className={`event-pill pill-calendar-task ${item.priority ? item.priority.toLowerCase() : 'med'} ${item.checked ? 'checked' : ''}`}
+                          key={item.id || `wcnt-${cIdx}`}
+                          draggable
+                          onDragStart={handleItemDragStart(item)}
+                          onDragEnd={handleItemDragEnd}
+                          onClick={() => handleEditPlanClick(item, cellDateStr)}
+                          title={`[Task] ${item.topic}`}
+                          style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'grab' }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={item.checked}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={() => handleToggleCalendarTask(item)}
+                            style={{ cursor: 'pointer', margin: 0, width: '12px', height: '12px' }}
+                          />
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {item.topic}
+                          </span>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div
+                        className="event-pill pill-content"
+                        key={item.id || `wcnt-${cIdx}`}
+                        draggable
+                        onDragStart={handleItemDragStart(item)}
+                        onDragEnd={handleItemDragEnd}
+                        onClick={() => handleEditPlanClick(item, cellDateStr)}
+                        title={`[${item.format}] ${item.topic}`}
+                        style={{ cursor: 'grab' }}
+                      >
+                        🎬 {item.topic}
+                      </div>
+                    );
+                  })}
+                  <button
+                    className="week-allday-add-btn"
+                    onClick={() => handleAddPlanClick(cellDateStr)}
+                    title={t.addContentPlan}
+                  >
+                    <Plus size={10} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Scrollable hour-by-hour grid */}
+          <div className="week-hourgrid-body">
+            <div className="week-hour-labels-col">
+              {HOURS.map((h) => (
+                <div className="week-hour-label" key={h}>{formatHourLabel(h)}</div>
+              ))}
+            </div>
+            {gridCells.map((cell, index) => {
+              const cellDateStr = formatDateStr(cell.date.getFullYear(), cell.date.getMonth(), cell.date.getDate());
+              const { calendarEvents, contentItems } = getItemsForDate(cell.date);
+              const timedEvents = calendarEvents
+                .filter(e => e.time !== 'All Day')
+                .map(e => ({ ...e, range: parseTimeRange(e.time) }))
+                .filter(e => e.range);
+              const timedContentItems = contentItems
+                .filter(item => item.time)
+                .map(item => ({ ...item, range: parseHHMM(item.time) }))
+                .filter(item => item.range);
+
+              const hourColKey = `wh-${cellDateStr}`;
+              return (
+                <div
+                  className={`week-hour-col ${dragOverKey === hourColKey ? 'drag-over-cell' : ''}`}
+                  key={index}
+                  onDragOver={handleCellDragOver(hourColKey)}
+                  onDragLeave={handleCellDragLeave(hourColKey)}
+                  onDrop={handleHourColDrop(cellDateStr)}
+                >
+                  {HOURS.map((h) => (
+                    <div className="week-hour-line" key={h} />
+                  ))}
+                  {timedEvents.map((evt, eIdx) => {
+                    const top = (evt.range.startMin / 60) * HOUR_HEIGHT;
+                    const height = Math.max(((evt.range.endMin - evt.range.startMin) / 60) * HOUR_HEIGHT, 22);
+                    const isGoogle = evt.source === 'Google Calendar';
+                    return (
+                      <div
+                        className={`week-timed-event ${isGoogle ? 'pill-google' : 'pill-outlook'}`}
+                        style={{ top: `${top}px`, height: `${height}px` }}
+                        onClick={() => handleViewEventClick(evt)}
+                        key={`timed-${eIdx}`}
+                        title={`${evt.title} (${evt.time})`}
+                      >
+                        <span className="week-timed-event-title">{evt.title}</span>
+                        <span className="week-timed-event-time">{evt.time}</span>
+                      </div>
+                    );
+                  })}
+                  {timedContentItems.map((item, iIdx) => {
+                    const top = (item.range.startMin / 60) * HOUR_HEIGHT;
+                    const height = Math.max(((item.range.endMin - item.range.startMin) / 60) * HOUR_HEIGHT, 22);
+                    const isTask = item.type === 'task';
+                    return (
+                      <div
+                        className={`week-timed-event ${isTask ? `pill-calendar-task ${item.priority ? item.priority.toLowerCase() : 'med'} ${item.checked ? 'checked' : ''}` : 'pill-content'}`}
+                        style={{ top: `${top}px`, height: `${height}px`, cursor: 'grab' }}
+                        draggable
+                        onDragStart={handleItemDragStart(item)}
+                        onDragEnd={handleItemDragEnd}
+                        onClick={() => handleEditPlanClick(item, cellDateStr)}
+                        key={item.id || `timed-plan-${iIdx}`}
+                        title={`${item.topic} (${item.time})`}
+                      >
+                        <span className="week-timed-event-title">{isTask ? '' : '🎬 '}{item.topic}</span>
+                        <span className="week-timed-event-time">{item.time}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
       <div className="calendar-grid-wrapper">
         {/* Days Header */}
         <div className="calendar-grid-header">
@@ -335,9 +696,12 @@ export default function CalendarView({ lang, allEvents = [], contentPlanner = []
             const isToday = new Date().toDateString() === date.toDateString();
 
             return (
-              <div 
-                className={`calendar-cell ${isCurrentMonth ? 'current-month' : 'other-month'} ${isToday ? 'today' : ''}`}
+              <div
+                className={`calendar-cell ${isCurrentMonth ? 'current-month' : 'other-month'} ${isToday ? 'today' : ''} ${dragOverKey === `m-${cellDateStr}` ? 'drag-over-cell' : ''}`}
                 key={index}
+                onDragOver={handleCellDragOver(`m-${cellDateStr}`)}
+                onDragLeave={handleCellDragLeave(`m-${cellDateStr}`)}
+                onDrop={handleMonthCellDrop(cellDateStr)}
               >
                 {/* Cell Header */}
                 <div className="cell-header">
@@ -375,34 +739,41 @@ export default function CalendarView({ lang, allEvents = [], contentPlanner = []
                     const isTask = item.type === 'task';
                     if (isTask) {
                       return (
-                        <div 
+                        <div
                           className={`event-pill pill-calendar-task ${item.priority ? item.priority.toLowerCase() : 'med'} ${item.checked ? 'checked' : ''}`}
-                          key={`cnt-${cIdx}`}
+                          key={item.id || `cnt-${cIdx}`}
+                          draggable
+                          onDragStart={handleItemDragStart(item)}
+                          onDragEnd={handleItemDragEnd}
                           onClick={() => handleEditPlanClick(item, cellDateStr)}
                           title={`[Task] ${item.topic}`}
-                          style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                          style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'grab' }}
                         >
-                          <input 
-                            type="checkbox" 
-                            checked={item.checked} 
+                          <input
+                            type="checkbox"
+                            checked={item.checked}
                             onClick={(e) => e.stopPropagation()}
                             onChange={() => handleToggleCalendarTask(item)}
                             style={{ cursor: 'pointer', margin: 0, width: '12px', height: '12px' }}
                           />
                           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {item.topic}
+                            {item.time ? `${item.time} · ` : ''}{item.topic}
                           </span>
                         </div>
                       );
                     }
                     return (
-                      <div 
+                      <div
                         className="event-pill pill-content"
-                        key={`cnt-${cIdx}`}
+                        key={item.id || `cnt-${cIdx}`}
+                        draggable
+                        onDragStart={handleItemDragStart(item)}
+                        onDragEnd={handleItemDragEnd}
                         onClick={() => handleEditPlanClick(item, cellDateStr)}
                         title={`[${item.format}] ${item.topic}`}
+                        style={{ cursor: 'grab' }}
                       >
-                        🎬 {item.topic}
+                        🎬 {item.time ? `${item.time} · ` : ''}{item.topic}
                       </div>
                     );
                   })}
@@ -412,6 +783,7 @@ export default function CalendarView({ lang, allEvents = [], contentPlanner = []
           })}
         </div>
       </div>
+      )}
 
       {/* Overdue/Incomplete Tasks Section */}
       <div className="overdue-tasks-container">
@@ -480,214 +852,135 @@ export default function CalendarView({ lang, allEvents = [], contentPlanner = []
         )}
       </div>
 
-      {/* Add / Edit / View Modal */}
-      {isModalOpen && (
-        <div className="modal-overlay">
-          <div className="modal-content" style={{ maxWidth: '500px' }}>
+      </div>
+      {/* Brainstorm Sidebar - park undated ideas/tasks, assign a date later */}
+      <div className="calendar-brainstorm-sidebar">
+        <div className="brainstorm-sidebar-header">
+          <Lightbulb size={18} style={{ color: 'var(--color-coral-dark)' }} />
+          <h3>{t.brainstormPanelTitle}</h3>
+        </div>
+        <p className="brainstorm-sidebar-desc">{t.brainstormPanelDesc}</p>
+
+        <button type="button" className="add-task-btn brainstorm-sidebar-add-idea-btn" onClick={handleOpenAddIdeaModal}>
+          <Plus size={14} /><span>{t.brainstormNewIdeaBtn}</span>
+        </button>
+
+        <div className="brainstorm-sidebar-list">
+          {brainstormIdeas.length === 0 ? (
+            <div className="brainstorm-sidebar-empty">{t.brainstormNoIdeas}</div>
+          ) : (
+            brainstormIdeas.map((idea) => (
+              <div key={idea.id} className="brainstorm-sidebar-item">
+                <div className="brainstorm-sidebar-item-row">
+                  <span
+                    className="brainstorm-sidebar-item-title"
+                    onClick={() => handleOpenEditIdeaModal(idea)}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    {idea.type === 'task' && (
+                      <span className="brainstorm-sidebar-item-type-badge">{t.task}</span>
+                    )}
+                    {idea.title}
+                  </span>
+                  <div className="brainstorm-sidebar-item-actions">
+                    <button
+                      type="button"
+                      className="brainstorm-sidebar-icon-btn"
+                      title={t.editIdeaTooltip}
+                      onClick={() => handleOpenEditIdeaModal(idea)}
+                    >
+                      <Pencil size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      className="brainstorm-sidebar-icon-btn"
+                      title={t.brainstormAssignDate}
+                      onClick={() => setAssigningIdeaId(assigningIdeaId === idea.id ? null : idea.id)}
+                    >
+                      <CalendarPlus size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      className="brainstorm-sidebar-icon-btn"
+                      title={t.deleteIdeaTooltip}
+                      onClick={() => handleDeleteBrainstormIdea(idea.id)}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+                {idea.hook && (
+                  <p className="brainstorm-sidebar-item-hook">{idea.hook}</p>
+                )}
+                {assigningIdeaId === idea.id && (
+                  <input
+                    type="date"
+                    autoFocus
+                    className="brainstorm-sidebar-date-input"
+                    onChange={(e) => handleAssignBrainstormDate(idea, e.target.value)}
+                  />
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+      </div>
+
+      {/* View Calendar Event Modal (Google/Outlook) */}
+      {isModalOpen && modalMode === 'view-event' && selectedEvent && (
+        <div className="modal-overlay" onClick={() => setIsModalOpen(false)}>
+          <div className="modal-content" style={{ maxWidth: '500px' }} onClick={(e) => e.stopPropagation()}>
             <button className="modal-close" onClick={() => setIsModalOpen(false)}>
               <X size={20} />
             </button>
 
-            {modalMode === 'view-event' && selectedEvent && (
-              <div className="event-details-view">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-                  <span className={`dot ${selectedEvent.source === 'Google Calendar' ? 'dot-google' : 'dot-outlook'}`}></span>
-                  <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase' }}>
-                    {selectedEvent.source}
-                  </span>
-                </div>
-                <h3 className="modal-title" style={{ fontSize: '22px', marginBottom: '8px' }}>
-                  {selectedEvent.title}
-                </h3>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--color-coral-dark)', fontSize: '14px', marginBottom: '16px' }}>
-                  <Clock size={14} />
-                  <span>{selectedEvent.date} · {selectedEvent.time}</span>
-                </div>
-                <div className="event-details-content" style={{ background: 'var(--bg-app)', padding: '16px', borderRadius: '12px', fontSize: '14px', color: 'var(--text-main)', border: '1px solid var(--border-card)', lineHeight: '1.5' }}>
-                  {selectedEvent.details}
-                </div>
+            <div className="event-details-view">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+                <span className={`dot ${selectedEvent.source === 'Google Calendar' ? 'dot-google' : 'dot-outlook'}`}></span>
+                <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+                  {selectedEvent.source}
+                </span>
               </div>
-            )}
-
-            {(modalMode === 'add' || modalMode === 'edit') && (
-              <form onSubmit={handleSavePlan} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <h3 className="modal-title" style={{ fontSize: '22px', borderBottom: '1px solid var(--border-card)', paddingBottom: '10px' }}>
-                  {modalMode === 'add' ? t.addItemToCalendar : t.editCalendarItem}
-                </h3>
-
-                {/* Type Selector (Content vs Task) */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <label style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-muted)' }}>{t.type}</label>
-                  <div className="priority-selector" style={{ gridTemplateColumns: '1fr 1fr' }}>
-                    <button 
-                      type="button"
-                      className={`priority-option ${planType === 'content' ? 'selected high' : ''}`}
-                      onClick={() => setPlanType('content')}
-                      style={{ padding: '8px', fontSize: '13px' }}
-                    >
-                      {t.contentPlan}
-                    </button>
-                    <button 
-                      type="button"
-                      className={`priority-option ${planType === 'task' ? 'selected high' : ''}`}
-                      onClick={() => setPlanType('task')}
-                      style={{ padding: '8px', fontSize: '13px' }}
-                    >
-                      {t.task}
-                    </button>
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <label style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-muted)' }}>{t.date}</label>
-                  <input 
-                    type="date" 
-                    value={selectedDateStr} 
-                    onChange={(e) => setSelectedDateStr(e.target.value)}
-                    required
-                    style={{ padding: '10px', borderRadius: '8px', border: '1px solid var(--border-card)', background: 'var(--bg-app)', color: 'var(--text-main)' }}
-                  />
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <label style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-muted)' }}>
-                    {planType === 'task' ? t.taskTitle : t.topicHook}
-                  </label>
-                  <input 
-                    type="text" 
-                    value={planTopic}
-                    onChange={(e) => setPlanTopic(e.target.value)}
-                    placeholder={planType === 'task' ? 'e.g., Edit vlog footage' : 'Why Brand Strategy is the new Coding...'}
-                    required
-                    style={{ padding: '10px', borderRadius: '8px', border: '1px solid var(--border-card)', background: 'var(--bg-app)', color: 'var(--text-main)' }}
-                  />
-                </div>
-
-                {/* Conditional Fields based on Type */}
-                {planType === 'content' && (
-                  <>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <label style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-muted)' }}>{t.format}</label>
-                        <select 
-                          value={planFormat} 
-                          onChange={(e) => setPlanFormat(e.target.value)}
-                          style={{ padding: '10px', borderRadius: '8px', border: '1px solid var(--border-card)', background: 'var(--bg-app)', color: 'var(--text-main)' }}
-                        >
-                          <option value="Reels">Reels</option>
-                          <option value="Shorts">Shorts</option>
-                          <option value="Carousel">Carousel</option>
-                          <option value="TikTok">TikTok</option>
-                          <option value="Article">Article</option>
-                          <option value="YouTube Video">YouTube Video</option>
-                        </select>
-                      </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <label style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-muted)' }}>{t.status}</label>
-                        <select 
-                          value={planStatus} 
-                          onChange={(e) => setPlanStatus(e.target.value)}
-                          style={{ padding: '10px', borderRadius: '8px', border: '1px solid var(--border-card)', background: 'var(--bg-app)', color: 'var(--text-main)' }}
-                        >
-                          <option value="Planned">{t.planned}</option>
-                          <option value="Drafting">{t.drafting}</option>
-                          <option value="Ideas">{t.ideas}</option>
-                          <option value="Posted">{t.posted}</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                      <label style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-muted)' }}>{t.outlineVisualInstructions}</label>
-                      <textarea 
-                        value={planOutline}
-                        onChange={(e) => setPlanOutline(e.target.value)}
-                        placeholder="Hooks, slides descriptions, details..."
-                        rows={4}
-                        style={{ padding: '10px', borderRadius: '8px', border: '1px solid var(--border-card)', background: 'var(--bg-app)', color: 'var(--text-main)', resize: 'vertical' }}
-                      />
-                    </div>
-                  </>
-                )}
-
-                {planType === 'task' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                      <label style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-muted)' }}>{t.priorityLevelLabel}</label>
-                      <div className="priority-selector">
-                        <button 
-                          type="button"
-                          className={`priority-option high ${taskPriority === 'HIGH' ? 'selected' : ''}`}
-                          onClick={() => setTaskPriority('HIGH')}
-                          style={{ fontSize: '12px', padding: '8px' }}
-                        >
-                          {t.highPriority}
-                        </button>
-                        <button 
-                          type="button"
-                          className={`priority-option med ${taskPriority === 'MED' ? 'selected' : ''}`}
-                          onClick={() => setTaskPriority('MED')}
-                          style={{ fontSize: '12px', padding: '8px' }}
-                        >
-                          {t.mediumPriority}
-                        </button>
-                        <button 
-                          type="button"
-                          className={`priority-option low ${taskPriority === 'LOW' ? 'selected' : ''}`}
-                          onClick={() => setTaskPriority('LOW')}
-                          style={{ fontSize: '12px', padding: '8px' }}
-                        >
-                          {t.lowPriority}
-                        </button>
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                      <label style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-muted)' }}>{t.taskNotesLabel}</label>
-                      <textarea 
-                        value={taskNotes}
-                        onChange={(e) => setTaskNotes(e.target.value)}
-                        placeholder="Mini notes about the task..."
-                        rows={3}
-                        style={{ padding: '10px', borderRadius: '8px', border: '1px solid var(--border-card)', background: 'var(--bg-app)', color: 'var(--text-main)', resize: 'vertical', fontSize: '13px' }}
-                      />
-                    </div>
-                  </div>
-                )}
-
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '10px' }}>
-                  {modalMode === 'edit' ? (
-                    <button 
-                      type="button" 
-                      onClick={handleDeletePlan}
-                      className="btn-danger"
-                      style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '10px 16px', background: '#FCECE8', color: '#C95B43', borderRadius: '20px', fontWeight: '500' }}
-                    >
-                      <Trash2 size={14} />
-                      {t.delete}
-                    </button>
-                  ) : <div />}
-
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button 
-                      type="button" 
-                      onClick={() => setIsModalOpen(false)}
-                      style={{ padding: '10px 16px', border: '1px solid var(--border-card)', borderRadius: '20px', color: 'var(--text-muted)' }}
-                    >
-                      {t.cancel}
-                    </button>
-                    <button 
-                      type="submit" 
-                      style={{ padding: '10px 20px', background: 'var(--color-coral-dark)', color: '#FFFFFF', borderRadius: '20px', fontWeight: '600' }}
-                    >
-                      {t.saveButton}
-                    </button>
-                  </div>
-                </div>
-              </form>
-            )}
+              <h3 className="modal-title" style={{ fontSize: '22px', marginBottom: '8px' }}>
+                {selectedEvent.title}
+              </h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--color-coral-dark)', fontSize: '14px', marginBottom: '16px' }}>
+                <Clock size={14} />
+                <span>{selectedEvent.date} · {selectedEvent.time}</span>
+              </div>
+              <div className="event-details-content" style={{ background: 'var(--bg-app)', padding: '16px', borderRadius: '12px', fontSize: '14px', color: 'var(--text-main)', border: '1px solid var(--border-card)', lineHeight: '1.5' }}>
+                {selectedEvent.details}
+              </div>
+            </div>
           </div>
         </div>
+      )}
+
+      {/* Add / Edit Plan Modal — shared with Dashboard's Add Task button */}
+      {isModalOpen && (modalMode === 'add' || modalMode === 'edit') && (
+        <PlanItemModal
+          t={t}
+          isOpen
+          mode={modalMode === 'edit' ? 'edit' : 'add'}
+          initialItem={editingItem}
+          initialDate={selectedDateStr}
+          defaultType={addDefaultType}
+          onClose={() => setIsModalOpen(false)}
+          onSaved={() => { if (onRefresh) onRefresh(true); }}
+        />
+      )}
+
+      {/* Add / Edit Brainstorm Idea Modal */}
+      {isIdeaModalOpen && (
+        <BrainstormIdeaModal
+          t={t}
+          isOpen
+          mode={ideaModalMode}
+          initialItem={editingIdea}
+          onClose={() => setIsIdeaModalOpen(false)}
+          onSaved={() => { if (onRefresh) onRefresh(true); }}
+        />
       )}
     </div>
   );

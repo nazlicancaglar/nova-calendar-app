@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Sun, Check, Mail, Plus, Trash2, Pencil, X, CheckSquare, RefreshCw } from 'lucide-react';
 import { translations } from '../translations';
+import PlanItemModal from './PlanItemModal';
 
-export default function Dashboard({ lang, data, onTogglePriority, onAddPriority, onDeletePriority, onSync, syncing, onRefresh }) {
+export default function Dashboard({ lang, data, onTogglePriority, onAddPriority, onDeletePriority, onReorderPriorities, onSync, syncing, onRefresh }) {
   const t = translations[lang] || translations.en;
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [taskText, setTaskText] = useState('');
-  const [taskPriority, setTaskPriority] = useState('MED');
+  const [isAddTaskOpen, setIsAddTaskOpen] = useState(false);
+  const [draggedPriorityId, setDraggedPriorityId] = useState(null);
+  const [dragOverPriorityId, setDragOverPriorityId] = useState(null);
 
   const [categories, setCategories] = useState([]);
   const [isEventModalOpen, setIsEventModalOpen] = useState(false);
@@ -333,20 +334,63 @@ export default function Dashboard({ lang, data, onTogglePriority, onAddPriority,
   }));
 
   // Combine, dedup by text
-  const allPriorities = [
+  const mergedPriorities = [
     ...staticPriorities,
     ...calendarPriorities.filter(cp => !staticPriorities.some(sp => sp.text === cp.text))
   ];
 
-  // ── Add Task Modal ─────────────────────────────────────────────────────────
-  const handleOpenModal = () => { setIsModalOpen(true); setTaskText(''); setTaskPriority('MED'); };
-  const handleCloseModal = () => setIsModalOpen(false);
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    if (!taskText.trim()) return;
-    onAddPriority(taskText.trim(), taskPriority);
-    setIsModalOpen(false);
+  // Apply the user's manual up/down order (persisted server-side, independent
+  // of any time assigned to a task) — items with no saved position keep their
+  // natural order and sort after any ordered items.
+  const priorityOrder = data.priorityListOrder || [];
+  const allPriorities = [...mergedPriorities].sort((a, b) => {
+    const ai = priorityOrder.indexOf(a.id);
+    const bi = priorityOrder.indexOf(b.id);
+    const aRank = ai === -1 ? Number.MAX_SAFE_INTEGER : ai;
+    const bRank = bi === -1 ? Number.MAX_SAFE_INTEGER : bi;
+    return aRank - bRank;
+  });
+
+  // Drag-and-drop reordering of the priority list (works across manual +
+  // calendar-sourced items, independent of any time assigned to a task)
+  const handlePriorityDragStart = (id) => (e) => {
+    setDraggedPriorityId(id);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', id);
   };
+
+  const handlePriorityDragOver = (id) => (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dragOverPriorityId !== id) setDragOverPriorityId(id);
+  };
+
+  const handlePriorityDragEnd = () => {
+    setDraggedPriorityId(null);
+    setDragOverPriorityId(null);
+  };
+
+  const handlePriorityDrop = (targetId) => (e) => {
+    e.preventDefault();
+    setDragOverPriorityId(null);
+    if (!onReorderPriorities || !draggedPriorityId || draggedPriorityId === targetId) {
+      setDraggedPriorityId(null);
+      return;
+    }
+    const ids = allPriorities.map(p => p.id);
+    const fromIdx = ids.indexOf(draggedPriorityId);
+    const toIdx = ids.indexOf(targetId);
+    setDraggedPriorityId(null);
+    if (fromIdx === -1 || toIdx === -1) return;
+    const newIds = [...ids];
+    const [moved] = newIds.splice(fromIdx, 1);
+    newIds.splice(toIdx, 0, moved);
+    onReorderPriorities(newIds);
+  };
+
+  // ── Add Task Modal ─────────────────────────────────────────────────────────
+  const handleOpenModal = () => setIsAddTaskOpen(true);
+  const handleCloseModal = () => setIsAddTaskOpen(false);
 
   const formatTodayDate = () => new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
 
@@ -549,7 +593,15 @@ export default function Dashboard({ lang, data, onTogglePriority, onAddPriority,
         )}
         <div className="priority-list">
           {allPriorities.map((item) => (
-            <div className="priority-item" key={item.id}>
+            <div
+              className={`priority-item ${draggedPriorityId === item.id ? 'dragging' : ''} ${dragOverPriorityId === item.id ? 'drag-over' : ''}`}
+              key={item.id}
+              draggable
+              onDragStart={handlePriorityDragStart(item.id)}
+              onDragOver={handlePriorityDragOver(item.id)}
+              onDrop={handlePriorityDrop(item.id)}
+              onDragEnd={handlePriorityDragEnd}
+            >
               <div
                 className={`checkbox-container ${item.checked ? 'checked' : ''}`}
                 onClick={() => onTogglePriority(item.id)}
@@ -569,17 +621,13 @@ export default function Dashboard({ lang, data, onTogglePriority, onAddPriority,
                 {item.priority && (
                   <span className={`priority-tag ${item.priority.toLowerCase()}`}>{item.priority}</span>
                 )}
-                 {!item.isCalendar ? (
-                  <button
-                    className="delete-task-btn"
-                    onClick={(e) => { e.stopPropagation(); onDeletePriority(item.id); }}
-                    title={t.deleteTask}
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                ) : (
-                  <div style={{ width: '21px', flexShrink: 0 }} />
-                )}
+                <button
+                  className="delete-task-btn"
+                  onClick={(e) => { e.stopPropagation(); onDeletePriority(item.id); }}
+                  title={t.deleteTask}
+                >
+                  <Trash2 size={13} />
+                </button>
               </div>
             </div>
           ))}
@@ -761,42 +809,18 @@ export default function Dashboard({ lang, data, onTogglePriority, onAddPriority,
         </div>
       </div>
 
-      {/* Add Task Modal */}
-      {isModalOpen && (
-        <div className="modal-overlay" onClick={handleCloseModal}>
-          <div className="modal-content task-modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3 className="modal-title">{t.addNewTask}</h3>
-              <button className="modal-close-btn" onClick={handleCloseModal}>&times;</button>
-            </div>
-            <form onSubmit={handleSubmit} className="task-form">
-              <div className="form-group">
-                <label htmlFor="taskText" className="form-label">{t.accomplishQuestion}</label>
-                <input
-                  type="text" id="taskText" className="form-input"
-                  value={taskText} onChange={(e) => setTaskText(e.target.value)}
-                  placeholder="e.g., Plan newsletter carousel" autoFocus required
-                />
-              </div>
-              <div className="form-group">
-                <label className="form-label">{t.priorityLevel}</label>
-                <div className="priority-selector">
-                  {['HIGH', 'MED', 'LOW'].map(p => (
-                    <label key={p} className={`priority-option ${p.toLowerCase()} ${taskPriority === p ? 'selected' : ''}`}>
-                      <input type="radio" name="priority" value={p} checked={taskPriority === p}
-                        onChange={() => setTaskPriority(p)} style={{ display: 'none' }} />
-                      <span>{p === 'HIGH' ? t.high : p === 'MED' ? t.medium : t.low}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-              <div className="form-actions">
-                <button type="button" className="btn btn-secondary" onClick={handleCloseModal}>{t.cancel}</button>
-                <button type="submit" className="btn btn-primary">{t.createTask}</button>
-              </div>
-            </form>
-          </div>
-        </div>
+      {/* Add Task Modal — same design/fields as the Calendar's task entry */}
+      {isAddTaskOpen && (
+        <PlanItemModal
+          t={t}
+          isOpen
+          mode="add"
+          lockType
+          defaultType="task"
+          initialDate={todayStr}
+          onClose={handleCloseModal}
+          onSaved={() => { if (onRefresh) onRefresh(true); }}
+        />
       )}
 
       {/* Add/Edit Event Modal */}

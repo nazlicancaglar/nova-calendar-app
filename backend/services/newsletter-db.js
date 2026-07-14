@@ -14,6 +14,7 @@ const { XMLParser } = require('fast-xml-parser');
 const https = require('https');
 const http = require('http');
 const crypto = require('crypto');
+const cron = require('node-cron');
 
 // ── DB Path ──────────────────────────────────────────────────────────────────
 const DB_PATH = process.env.NEWSLETTER_DB_PATH ||
@@ -27,6 +28,7 @@ function getDb() {
       _db = new Database(DB_PATH);
       _db.pragma('journal_mode = WAL');
       _db.pragma('foreign_keys = ON');
+      ensureUserStateColumns(_db);
       console.log('[newsletter-db] Connected to', DB_PATH);
     } catch (err) {
       console.error('[newsletter-db] Failed to open DB:', err.message);
@@ -34,6 +36,17 @@ function getDb() {
     }
   }
   return _db;
+}
+
+// The upstream newsletter-repo schema has no per-user state; we add our own
+// columns on first open. `archived` (not DELETE) hides items permanently —
+// deleting the row would drop its deduplication_hash and the RSS poller
+// would re-insert the same article as unread on the next fetch.
+function ensureUserStateColumns(db) {
+  const cols = db.prepare('PRAGMA table_info(articles)').all().map(c => c.name);
+  if (!cols.includes('read_at')) db.exec('ALTER TABLE articles ADD COLUMN read_at TEXT');
+  if (!cols.includes('starred')) db.exec('ALTER TABLE articles ADD COLUMN starred INTEGER DEFAULT 0');
+  if (!cols.includes('archived')) db.exec('ALTER TABLE articles ADD COLUMN archived INTEGER DEFAULT 0');
 }
 
 // ── Read Functions ───────────────────────────────────────────────────────────
@@ -79,6 +92,100 @@ function getRecentArticles(limit = 20, days = 7, categories = []) {
  */
 function getMarketingArticles(limit = 15, days = 7) {
   return getRecentArticles(limit, days, ['marketing']);
+}
+
+/**
+ * Browse list for the Newsletter UI: always the newest articles first.
+ * Returns up to `limit` unread articles (so as items get read, the next
+ * newest ones backfill the list and it stays at `limit`), plus up to
+ * `limit` read-but-unarchived ones so the "show read" toggle still works.
+ * Archived articles (weekly cleanup) never appear.
+ */
+function getBrowseArticles(limit = 30, days = 7, categories = []) {
+  const db = getDb();
+  if (!db) return [];
+
+  try {
+    const catFilter = categories.length > 0
+      ? `AND a.category IN (${categories.map(() => '?').join(',')})`
+      : '';
+    const baseParams = categories.length > 0 ? [...categories, limit] : [limit];
+
+    const select = (readCond) => db.prepare(`
+      SELECT a.id, a.title, a.url, a.snippet, a.published_at, a.fetched_at,
+             a.category, a.importance, a.is_breaking, a.tags,
+             a.read_at, a.starred,
+             f.name as feed_name, f.category as feed_category
+      FROM articles a
+      JOIN feeds f ON f.id = a.feed_id
+      WHERE COALESCE(a.archived, 0) = 0
+        AND ${readCond}
+        AND a.published_at >= datetime('now', '-${Math.floor(days)} days')
+      ${catFilter}
+      ORDER BY a.published_at DESC
+      LIMIT ?
+    `).all(...baseParams);
+
+    const unread = select('a.read_at IS NULL');
+    const read = select('a.read_at IS NOT NULL');
+    return [...unread, ...read];
+  } catch (err) {
+    console.error('[newsletter-db] getBrowseArticles error:', err.message);
+    return [];
+  }
+}
+
+/**
+ * Mark an article read/unread.
+ */
+function markArticleRead(id, read = true) {
+  const db = getDb();
+  if (!db) return false;
+  try {
+    const info = read
+      ? db.prepare("UPDATE articles SET read_at = datetime('now') WHERE id = ?").run(id)
+      : db.prepare('UPDATE articles SET read_at = NULL WHERE id = ?').run(id);
+    return info.changes > 0;
+  } catch (err) {
+    console.error('[newsletter-db] markArticleRead error:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Star/unstar an article. Starred articles survive the weekly cleanup.
+ */
+function setArticleStarred(id, starred = true) {
+  const db = getDb();
+  if (!db) return false;
+  try {
+    const info = db.prepare('UPDATE articles SET starred = ? WHERE id = ?').run(starred ? 1 : 0, id);
+    return info.changes > 0;
+  } catch (err) {
+    console.error('[newsletter-db] setArticleStarred error:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Weekly reset: archive every read article that was not starred.
+ * Archived rows stay in the DB (keeps deduplication intact) but never
+ * show up in the browse list again.
+ */
+function weeklyCleanupReadArticles() {
+  const db = getDb();
+  if (!db) return 0;
+  try {
+    const info = db.prepare(`
+      UPDATE articles SET archived = 1
+      WHERE read_at IS NOT NULL AND COALESCE(starred, 0) = 0 AND COALESCE(archived, 0) = 0
+    `).run();
+    console.log(`[newsletter-db] Weekly cleanup: archived ${info.changes} read/unstarred articles`);
+    return info.changes;
+  } catch (err) {
+    console.error('[newsletter-db] weeklyCleanupReadArticles error:', err.message);
+    return 0;
+  }
 }
 
 /**
@@ -310,6 +417,7 @@ async function fetchAllFeeds() {
 
 // Run once on startup, then every 60 minutes
 let fetchInterval = null;
+let weeklyCleanupJob = null;
 
 function startFeedPoller() {
   // Run immediately on first startup
@@ -320,7 +428,12 @@ function startFeedPoller() {
     fetchAllFeeds().catch(err => console.error('[newsletter-db] Cron fetch error:', err));
   }, 60 * 60 * 1000);
 
-  console.log('[newsletter-db] Feed poller started (every 60 min)');
+  // Weekly reset: every Monday 04:00 archive read-but-unstarred articles
+  weeklyCleanupJob = cron.schedule('0 4 * * 1', () => {
+    weeklyCleanupReadArticles();
+  });
+
+  console.log('[newsletter-db] Feed poller started (every 60 min) + weekly cleanup (Mon 04:00)');
 }
 
 function stopFeedPoller() {
@@ -328,15 +441,23 @@ function stopFeedPoller() {
     clearInterval(fetchInterval);
     fetchInterval = null;
   }
+  if (weeklyCleanupJob) {
+    weeklyCleanupJob.stop();
+    weeklyCleanupJob = null;
+  }
 }
 
 module.exports = {
   getDb,
   getRecentArticles,
+  getBrowseArticles,
   getMarketingArticles,
   getTopArticles,
   getDigestArticles,
   getStats,
+  markArticleRead,
+  setArticleStarred,
+  weeklyCleanupReadArticles,
   fetchAllFeeds,
   startFeedPoller,
   stopFeedPoller

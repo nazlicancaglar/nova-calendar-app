@@ -1,15 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { X, BookOpen, Clock, Tag, Check, CheckCircle2, Circle, ChevronLeft, ChevronRight, Eye, EyeOff } from 'lucide-react';
+import { X, BookOpen, Clock, Tag, Check, CheckCircle2, Circle, ChevronLeft, ChevronRight, Eye, EyeOff, Star } from 'lucide-react';
 
-// Persist which articles the user has marked "read" (hidden) in localStorage.
-const READ_KEY = 'nova_newsletter_read_v1';
-const loadReadIds = () => {
-  try { return new Set(JSON.parse(localStorage.getItem(READ_KEY) || '[]')); }
-  catch { return new Set(); }
-};
-const saveReadIds = (set) => {
-  try { localStorage.setItem(READ_KEY, JSON.stringify([...set])); } catch { /* ignore quota errors */ }
-};
+// Read/star state now lives in the backend DB. This localStorage key is only
+// read once to migrate marks made before the server-side switch, then removed.
+const LEGACY_READ_KEY = 'nova_newsletter_read_v1';
 const articleKey = (a) => String(a.id ?? a.link ?? a.title);
 
 const PAGE_SIZE = 6; // 6 per page × 5 pages = up to 30 articles per category
@@ -154,7 +148,6 @@ export default function Newsletter({ lang }) {
   const [articles, setArticles] = useState([]);
   const [selectedArticle, setSelectedArticle] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [readIds, setReadIds] = useState(loadReadIds);
   const [showRead, setShowRead] = useState(false);
   const [pageByCat, setPageByCat] = useState({});
 
@@ -171,6 +164,25 @@ export default function Newsletter({ lang }) {
       .then(res => res.json())
       .then(data => {
         if (Array.isArray(data) && data.length > 0) {
+          // One-time migration: push read marks made before the server-side
+          // switch (stored in localStorage) up to the backend, then drop the key.
+          try {
+            const legacy = new Set(JSON.parse(localStorage.getItem(LEGACY_READ_KEY) || '[]'));
+            if (legacy.size > 0) {
+              data = data.map(a => {
+                if (!a.read && a.id && legacy.has(articleKey(a))) {
+                  fetch('/api/newsletter/read', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: a.id, read: true })
+                  }).catch(() => {});
+                  return { ...a, read: true };
+                }
+                return a;
+              });
+              localStorage.removeItem(LEGACY_READ_KEY);
+            }
+          } catch { /* ignore migration errors */ }
           setArticles(data);
           return null;
         }
@@ -181,19 +193,32 @@ export default function Newsletter({ lang }) {
   }, []);
 
   const toggleRead = (article) => {
-    const key = articleKey(article);
-    setReadIds(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      saveReadIds(next);
-      return next;
-    });
+    const next = !article.read;
+    setArticles(prev => prev.map(a => (articleKey(a) === articleKey(article) ? { ...a, read: next } : a)));
+    if (article.id) {
+      fetch('/api/newsletter/read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: article.id, read: next })
+      }).catch(err => console.error('Error saving read state:', err));
+    }
+  };
+
+  const toggleStar = (article) => {
+    const next = !article.starred;
+    setArticles(prev => prev.map(a => (articleKey(a) === articleKey(article) ? { ...a, starred: next } : a)));
+    if (article.id) {
+      fetch('/api/newsletter/star', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: article.id, starred: next })
+      }).catch(err => console.error('Error saving star state:', err));
+    }
   };
 
   const setPage = (cat, p) => setPageByCat(prev => ({ ...prev, [cat]: p }));
 
-  const readCount = articles.reduce((n, a) => n + (readIds.has(articleKey(a)) ? 1 : 0), 0);
+  const readCount = articles.reduce((n, a) => n + (a.read ? 1 : 0), 0);
 
   return (
     <div className="newsletter-container">
@@ -255,7 +280,7 @@ export default function Newsletter({ lang }) {
               {categories.map((categoryName) => {
                 const all = groupedArticles[categoryName];
                 // Hide read articles unless the user explicitly asks to see them
-                const visible = showRead ? all : all.filter(a => !readIds.has(articleKey(a)));
+                const visible = showRead ? all : all.filter(a => !a.read);
                 const totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
                 const page = Math.min(pageByCat[categoryName] || 0, totalPages - 1);
                 const pageArticles = visible.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
@@ -288,7 +313,8 @@ export default function Newsletter({ lang }) {
                       <>
                         <div className="article-grid">
                           {pageArticles.map((article) => {
-                            const isRead = readIds.has(articleKey(article));
+                            const isRead = !!article.read;
+                            const isStarred = !!article.starred;
                             return (
                               <div
                                 className="article-card"
@@ -296,6 +322,22 @@ export default function Newsletter({ lang }) {
                                 onClick={() => setSelectedArticle(article)}
                                 style={{ height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', gap: '12px', position: 'relative', opacity: isRead ? 0.55 : 1 }}
                               >
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); toggleStar(article); }}
+                                  title={isStarred ? t.unstarArticle : t.starArticle}
+                                  aria-label={isStarred ? t.unstarArticle : t.starArticle}
+                                  style={{
+                                    position: 'absolute', top: '10px', right: '46px', zIndex: 2,
+                                    width: '30px', height: '30px', borderRadius: '50%',
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    cursor: 'pointer',
+                                    border: `1px solid ${isStarred ? 'var(--color-gold-dark, #C98A22)' : 'var(--border-card)'}`,
+                                    background: isStarred ? '#FBF0DF' : 'var(--bg-card)',
+                                    color: isStarred ? 'var(--color-gold-dark, #C98A22)' : 'var(--text-muted)'
+                                  }}
+                                >
+                                  <Star size={15} fill={isStarred ? 'currentColor' : 'none'} />
+                                </button>
                                 <button
                                   onClick={(e) => { e.stopPropagation(); toggleRead(article); }}
                                   title={isRead ? t.markUnread : t.markRead}
@@ -312,7 +354,7 @@ export default function Newsletter({ lang }) {
                                 >
                                   {isRead ? <CheckCircle2 size={16} /> : <Circle size={16} />}
                                 </button>
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', paddingRight: '30px' }}>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', paddingRight: '66px' }}>
                                   <div className="article-meta">
                                     <span className="article-category">
                                       {article.category || t.technology}

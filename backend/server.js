@@ -478,6 +478,20 @@ app.post('/api/dashboard/priorities', (req, res) => {
   res.json({ success: true, priorities: data.priorities });
 });
 
+// Persist the user's manual drag/up-down order for the combined Top Priorities
+// list (mixes static priorities + today's calendar tasks, keyed by their
+// display ids e.g. "cal-123"). Order is independent of any assigned time.
+app.post('/api/dashboard/priorities/reorder', (req, res) => {
+  const { order } = req.body;
+  if (!Array.isArray(order)) {
+    return res.status(400).json({ error: 'order must be an array of ids' });
+  }
+  const data = getDashboardData();
+  data.priorityListOrder = order;
+  fs.writeFileSync(CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+  res.json({ success: true, priorityListOrder: data.priorityListOrder });
+});
+
 // Delete a priority item
 app.post('/api/dashboard/priorities/delete', (req, res) => {
   const { id } = req.body;
@@ -538,7 +552,7 @@ app.get('/api/calendar', (req, res) => {
 
 // Add or update a content planner item
 app.post('/api/weekly-content/planner', (req, res) => {
-  const { id, day, date, topic, format, status, outline, isManual, type, checked, priority, notes, hook, script } = req.body;
+  const { id, day, date, time, topic, format, status, outline, isManual, type, checked, priority, notes, hook, script } = req.body;
   const data = getDashboardData();
 
   if (!data.weeklyContent) {
@@ -574,6 +588,7 @@ app.post('/api/weekly-content/planner', (req, res) => {
     id: id || Date.now().toString(),
     day: calculatedDay,
     date: date || null,
+    time: time || '',
     topic: topic || 'New Topic',
     format: format || 'Reels',
     status: status || 'Planned',
@@ -617,7 +632,7 @@ app.post('/api/weekly-content/planner/delete', (req, res) => {
 
 // Add or update a brainstorm idea
 app.post('/api/weekly-content/brainstorm', (req, res) => {
-  const { id, title, hook, details, script, format, createdAt } = req.body;
+  const { id, title, hook, details, script, format, createdAt, type, priority } = req.body;
   const data = getDashboardData();
   
   if (!data.weeklyContent) {
@@ -640,6 +655,8 @@ app.post('/api/weekly-content/brainstorm', (req, res) => {
     details: details || req.body.description || '',
     script: script || '',
     format: format || 'Reels',
+    type: type === 'task' ? 'task' : 'content',
+    priority: priority || 'MED',
     createdAt: createdAt || new Date().toISOString()
   };
   
@@ -1043,7 +1060,10 @@ app.get('/api/newsletter/browse', (req, res) => {
       .replace(/&#0?39;/g, "'")
       .replace(/&amp;/g, '&')
       .replace(/&quot;/g, '"')
-      .replace(/&#8217;/g, "'")
+      .replace(/&#821[67];/g, "'")
+      .replace(/&#822[01];/g, '"')
+      .replace(/&#8211;|&#8212;|&ndash;|&mdash;/g, '–')
+      .replace(/&#\d+;/g, '')
       .replace(/<[^>]+>/g, '')
       .trim();
 
@@ -1056,17 +1076,45 @@ app.get('/api/newsletter/browse', (req, res) => {
       source: row.feed_name,
       category: categoryLabel,
       importance: row.importance,
+      read: !!row.read_at,
+      starred: !!row.starred,
       content: `### Executive Summary\n\n${row.snippet || ''}\n\n---\n*This article was automatically compiled from **${row.feed_name}**. To read the original article or check comments, [click here](${row.url}).*`
     });
 
-    // Technology (feeds tagged 'other') is plentiful in the last 30 days.
-    // Marketing is scarcer, so widen the window to fill ~5 pages.
-    const tech = newsletterDb.getRecentArticles(perCategory, 30, ['other']).map(r => mapRow(r, 'Technology'));
-    const marketing = newsletterDb.getRecentArticles(perCategory, 180, ['marketing']).map(r => mapRow(r, 'Marketing'));
+    // Newest-first; unread articles backfill up to perCategory as items get
+    // read, so the visible list stays at ~30. Technology (feeds tagged
+    // 'other') is plentiful in the last 30 days; marketing is scarcer, so
+    // widen its window.
+    const tech = newsletterDb.getBrowseArticles(perCategory, 30, ['other']).map(r => mapRow(r, 'Technology'));
+    const marketing = newsletterDb.getBrowseArticles(perCategory, 180, ['marketing']).map(r => mapRow(r, 'Marketing'));
 
     res.json([...tech, ...marketing]);
   } catch (err) {
     console.error('[server] Newsletter browse error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── /api/newsletter/read — persist read/unread state ────────────────────────
+app.post('/api/newsletter/read', (req, res) => {
+  try {
+    const { id, read } = req.body;
+    if (!id) return res.status(400).json({ error: 'id is required' });
+    const ok = newsletterDb.markArticleRead(id, read !== false);
+    res.json({ success: ok });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── /api/newsletter/star — persist star state (starred survive weekly reset) ─
+app.post('/api/newsletter/star', (req, res) => {
+  try {
+    const { id, starred } = req.body;
+    if (!id) return res.status(400).json({ error: 'id is required' });
+    const ok = newsletterDb.setArticleStarred(id, starred !== false);
+    res.json({ success: ok });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
