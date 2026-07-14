@@ -1,42 +1,17 @@
 {
-  "version": 2,
-  "builds": [
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm install --prefix frontend && npm run build --prefix frontend",
+  "outputDirectory": "frontend/dist",
+  "installCommand": "echo skip",
+  "framework": null,
+  "rewrites": [
     {
-      "src": "frontend/package.json",
-      "use": "@vercel/static-build",
-      "config": {
-        "distDir": "dist"
-      }
-    }
-  ],
-  "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "https://nova-backend.onrender.com/api/$1"
+      "source": "/api/:path*",
+      "destination": "https://nova-backend.onrender.com/api/:path*"
     },
     {
-      "src": "/assets/(.*)",
-      "dest": "frontend/dist/assets/$1"
-    },
-    {
-      "src": "/icons/(.*)",
-      "dest": "frontend/dist/icons/$1"
-    },
-    {
-      "src": "/manifest.json",
-      "dest": "frontend/dist/manifest.json"
-    },
-    {
-      "src": "/sw.js",
-      "dest": "frontend/dist/sw.js"
-    },
-    {
-      "src": "/favicon.svg",
-      "dest": "frontend/dist/favicon.svg"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "frontend/dist/index.html"
+      "source": "/((?!api/|assets/|icons/|manifest.json|sw.js|favicon.svg).*)",
+      "destination": "/index.html"
     }
   ]
 }
