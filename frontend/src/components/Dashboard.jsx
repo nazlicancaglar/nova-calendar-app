@@ -3,7 +3,7 @@ import { Sun, Check, Mail, Plus, Trash2, Pencil, X, CheckSquare, RefreshCw } fro
 import { translations } from '../translations';
 import PlanItemModal from './PlanItemModal';
 
-export default function Dashboard({ lang, data, onTogglePriority, onAddPriority, onDeletePriority, onReorderPriorities, onSync, syncing, onRefresh }) {
+export default function Dashboard({ lang, data, onTogglePriority, onAddPriority, onDeletePriority, onReorderPriorities, onSync, syncing, syncEnabled = false, onRefresh }) {
   const t = translations[lang] || translations.en;
   const [isAddTaskOpen, setIsAddTaskOpen] = useState(false);
   const [draggedPriorityId, setDraggedPriorityId] = useState(null);
@@ -404,7 +404,9 @@ export default function Dashboard({ lang, data, onTogglePriority, onAddPriority,
         </div>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
           <div className="date-capsule">{formatTodayDate()}</div>
-          {onSync && (
+          {/* Sync yalnızca 'sync' özelliği açıkken (harici entegrasyonlar kurulu)
+              görünür; kapalı deploy'da endpoint 503 döner. */}
+          {onSync && syncEnabled && (
             <button
               className={`sync-button ${syncing ? 'spinning' : ''}`}
               onClick={onSync}

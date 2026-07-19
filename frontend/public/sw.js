@@ -1,4 +1,4 @@
-const CACHE_NAME = 'nova-workspace-v3';
+const CACHE_NAME = 'nova-workspace-v4';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -35,9 +35,13 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Network-first strategy for same-origin requests: always serve fresh code
-// when online, fall back to the cache only when the network is unavailable.
-// (Cache-first here previously served stale JS after every deploy/edit.)
+// Caching strategy for same-origin requests:
+//  - Vite's hashed build assets (/assets/*.js, *.css) are IMMUTABLE — their
+//    filename changes on every build — so cache-first is safe AND fast: instant
+//    repeat loads and true offline capability, with zero staleness risk.
+//  - Everything else (index.html, manifest.json, icons) stays network-first so
+//    a deploy is picked up immediately; falls back to cache only when offline.
+//    (Cache-first on index.html previously served stale JS after every deploy.)
 self.addEventListener('fetch', (event) => {
   const req = event.request;
 
@@ -46,6 +50,27 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  const url = new URL(req.url);
+  const isHashedAsset = url.pathname.startsWith('/assets/');
+
+  if (isHashedAsset) {
+    // Cache-first for immutable hashed assets.
+    event.respondWith(
+      caches.match(req).then((cached) => {
+        if (cached) return cached;
+        return fetch(req).then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const cacheCopy = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(req, cacheCopy));
+          }
+          return networkResponse;
+        });
+      })
+    );
+    return;
+  }
+
+  // Network-first for the app shell and other same-origin files.
   event.respondWith(
     fetch(req)
       .then((networkResponse) => {

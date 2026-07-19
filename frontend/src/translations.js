@@ -95,6 +95,28 @@ const en = {
 
   // WeeklyContent Tab
   weeklyPlanner: "Weekly Content Planner",
+  // Week navigation
+  thisWeek: "This Week",
+  lastWeek: "Last Week",
+  nextWeek: "Next Week",
+  weeksLabel: "weeks",
+  prevWeek: "Previous week",
+  nextWeekBtn: "Next week",
+  backToThisWeek: "Back to this week",
+  today: "Today",
+  noContentThisWeek: "No content planned for this week.",
+  // Carry-over
+  carriedOverToast: "unfinished item(s) carried over to this week",
+  carriedOverBadge: "Carried over",
+  carriedOverBadgeTip: "Automatically moved here from a previous week because it wasn't finished.",
+  // Recurring
+  recurringWeekly: "Repeats every week",
+  recurringBadge: "Weekly",
+  makeRecurring: "Repeat weekly",
+  recurringOn: "Repeating weekly",
+  recurringToggleTip: "Turn this into a weekly recurring content slot.",
+  // Reminders
+  reminderFallbackTitle: "Content reminder",
   aiGenerate: "Generate with AI",
   aiGenerating: "Generating...",
   speechDuration: "min speech duration",

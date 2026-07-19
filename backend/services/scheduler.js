@@ -8,8 +8,8 @@ const { fetchAllCalendarEvents } = require('./calendar');
 const { syncNewsletterRepo } = require('./newsletter');
 const { runInstagramAnalysis } = require('./instagram');
 const { getWeatherForLocation } = require('./weather');
+const storage = require('./storage');
 
-const CACHE_PATH = path.join(__dirname, '..', 'dashboard-cache.json');
 const GOALS_PATH = path.join(__dirname, '..', '..', 'goals.json');
 
 // Get current month name (e.g., "June 2026")
@@ -54,14 +54,12 @@ async function syncAllData() {
     }
   }
 
-  // 2a. Load existing cache first so we know the user's saved location (set by
-  // the frontend via browser geolocation) before fetching weather for it.
-  let currentCache = {};
-  if (fs.existsSync(CACHE_PATH)) {
-    try {
-      currentCache = JSON.parse(fs.readFileSync(CACHE_PATH, 'utf8'));
-    } catch (e) {}
-  }
+  // 2a. Load existing dashboard state from the storage layer (Supabase in
+  // deploy, file locally) so we merge onto the user's REAL saved data — their
+  // saved location, custom events, categories, priorities, planner — instead of
+  // a stale/empty file. Reading dashboard-cache.json directly here used to
+  // clobber Supabase-backed data with defaults on every /api/sync.
+  const currentCache = storage.get('dashboard') || {};
 
   // 2b. Fetch all other integrations in parallel (Notion tasks disabled per user request)
   const [emailData, calendarEvents, instagramData, liveWeather] = await Promise.all([
@@ -201,8 +199,10 @@ async function syncAllData() {
     })()
   };
 
-  // Write new cache to file
-  fs.writeFileSync(CACHE_PATH, JSON.stringify(mergedData, null, 2), 'utf8');
+  // Persist through the storage layer so the write reaches Supabase (deploy)
+  // and the in-memory cache other routes read from — not just a local file
+  // that nobody reads back.
+  storage.set('dashboard', mergedData);
   console.log('Dashboard cache updated successfully at:', mergedData.lastUpdated);
   return mergedData;
 }

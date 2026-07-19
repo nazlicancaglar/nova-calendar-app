@@ -343,6 +343,91 @@ app.get('/api/dashboard', (req, res) => {
   res.json(data);
 });
 
+// ── CSV dışa aktarma ─────────────────────────────────────────────────────────
+// Kullanıcının girdiği tüm planlama verilerini (öncelikler, haftalık planner,
+// beyin fırtınası fikirleri, aylık hedefler, özel takvim etkinlikleri) tek bir
+// CSV dosyası olarak indirir. "section" alanı satırın hangi bölüme ait
+// olduğunu belirtir, böylece Excel'de filtrelenebilir. Auth korumalı (bu route
+// /api middleware'inden sonra tanımlı).
+function csvEscape(val) {
+  if (val === null || val === undefined) return '';
+  const s = String(val);
+  // Virgül, çift tırnak veya satır sonu içeriyorsa tırnakla ve iç tırnakları ikile.
+  if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+
+function buildDashboardCsv(data) {
+  const rows = [];
+  const header = ['section', 'title', 'detail', 'status', 'priority', 'date', 'day'];
+  rows.push(header.map(csvEscape).join(','));
+
+  const push = (section, { title = '', detail = '', status = '', priority = '', date = '', day = '' } = {}) => {
+    rows.push([section, title, detail, status, priority, date, day].map(csvEscape).join(','));
+  };
+
+  // Öncelikler
+  for (const p of (data.priorities || [])) {
+    push('priority', {
+      title: p.text,
+      status: p.checked ? 'done' : 'open',
+      priority: p.priority || '',
+    });
+  }
+
+  // Haftalık içerik planlayıcı
+  const wc = data.weeklyContent || {};
+  for (const item of (wc.contentPlanner || [])) {
+    push('planner', {
+      title: item.topic || item.title || '',
+      detail: item.outline || item.format || '',
+      status: item.status || '',
+      date: item.date || '',
+      day: item.day || '',
+    });
+  }
+
+  // Beyin fırtınası fikirleri
+  for (const idea of (wc.brainstormIdeas || [])) {
+    push('brainstorm', {
+      title: idea.title || idea.text || '',
+      detail: idea.notes || idea.description || '',
+      status: idea.status || '',
+    });
+  }
+
+  // Aylık/çeyreklik hedefler (action board)
+  const board = data.actionBoard || {};
+  for (const g of (board.goals || [])) {
+    push('goal', {
+      title: typeof g === 'string' ? g : (g.text || g.title || ''),
+      status: (g && g.done) ? 'done' : '',
+    });
+  }
+
+  // Özel takvim etkinlikleri
+  for (const e of (data.customEvents || [])) {
+    push('event', {
+      title: e.title || '',
+      detail: e.details || '',
+      date: e.date || '',
+      day: e.time || '',
+    });
+  }
+
+  return rows.join('\r\n');
+}
+
+app.get('/api/export.csv', (req, res) => {
+  const data = getDashboardData();
+  const csv = buildDashboardCsv(data);
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="nova-export-${stamp}.csv"`);
+  // Excel'in UTF-8 Türkçe karakterleri doğru okuması için BOM ekle.
+  res.send('﻿' + csv);
+});
+
 // GET categories
 app.get('/api/dashboard/categories', (req, res) => {
   const data = getDashboardData();
@@ -568,7 +653,7 @@ app.post('/api/dashboard/events/delete', (req, res) => {
 app.post('/api/dashboard/priorities/toggle', (req, res) => {
   const { id } = req.body;
   const data = getDashboardData();
-  const priority = data.priorities.find(p => p.id === id);
+  const priority = (data.priorities || []).find(p => p.id === id);
   if (priority) {
     priority.checked = !priority.checked;
     saveDashboard(data);
@@ -672,7 +757,7 @@ app.get('/api/calendar', (req, res) => {
 
 // Add or update a content planner item
 app.post('/api/weekly-content/planner', (req, res) => {
-  const { id, day, date, time, topic, format, status, outline, isManual, type, checked, priority, notes, hook, script } = req.body;
+  const { id, day, date, time, topic, format, status, outline, isManual, type, checked, priority, notes, hook, script, recurring, recurDay, carriedOverAt } = req.body;
   const data = getDashboardData();
 
   if (!data.weeklyContent) {
@@ -719,7 +804,12 @@ app.post('/api/weekly-content/planner', (req, res) => {
     isManual: isManual !== undefined ? isManual : true,
     type: type || 'content',
     checked: checked !== undefined ? checked : false,
-    priority: priority || 'MED'
+    priority: priority || 'MED',
+    // Weekly-recurring content template flag + which weekday it repeats on.
+    recurring: recurring || null,
+    recurDay: recurDay || null,
+    // Timestamp set when an unfinished item is auto-carried into a later week.
+    carriedOverAt: carriedOverAt || null
   };
 
   if (index > -1) {
@@ -852,8 +942,12 @@ app.post('/api/weekly-content/planner/revert', (req, res) => {
   res.json({ success: true, weeklyContent: data.weeklyContent || { instagramAnalyzed: [], contentPlanner: [], brainstormIdeas: [] } });
 });
 
-// Video transcription and AI script rewrite
+// Video transcription and AI script rewrite.
+// Gated behind the 'ai' feature: it spawns a local Python (Whisper) process and
+// calls OpenRouter, neither of which exists on the lightweight deploy host.
+// Off by default → clean 503 instead of a spawn crash on Linux.
 app.post('/api/weekly-content/transcribe', async (req, res) => {
+  if (!featureOn('ai')) return featureDisabled(res, 'ai');
   const { url } = req.body;
   if (!url) {
     return res.status(400).json({ error: 'URL is required' });
@@ -862,8 +956,10 @@ app.post('/api/weekly-content/transcribe', async (req, res) => {
   try {
     const { spawn } = require('child_process');
     const { callOpenRouter } = require('./services/ai-content');
-    
-    const pythonPath = 'C:\\ProgramData\\anaconda3\\python.exe';
+
+    // Python interpreter: PYTHON_PATH env overrides; else 'python3' from PATH
+    // (Linux/Render). The old hardcoded Windows Anaconda path broke on deploy.
+    const pythonPath = process.env.PYTHON_PATH || 'python3';
     const transcribeScript = path.join(__dirname, 'transcribe.py');
     const suffix = Date.now().toString();
 
@@ -994,6 +1090,7 @@ app.post('/api/action-board/goals', (req, res) => {
 });
 // Trigger manual data synchronization/refresh
 app.post('/api/sync', async (req, res) => {
+  if (!featureOn('sync')) return featureDisabled(res, 'sync');
   try {
     const syncAllData = require('./services/scheduler').syncAllData;
     const updatedData = await syncAllData();
@@ -1007,6 +1104,7 @@ app.post('/api/sync', async (req, res) => {
 
 // AI-powered content regeneration (uses cached competitor + newsletter data)
 app.post('/api/ai-generate', async (req, res) => {
+  if (!featureOn('ai')) return featureDisabled(res, 'ai');
   try {
     if (!process.env.OPENROUTER_API_KEY) {
       return res.status(400).json({ error: 'OPENROUTER_API_KEY not configured' });

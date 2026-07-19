@@ -1,10 +1,58 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Eye, Heart, MessageCircle, PlayCircle, CalendarRange, Flame,
   ChevronDown, ChevronUp, TrendingUp, Lightbulb, Zap, BookOpen,
   ArrowRight, Sparkles, AlertTriangle, Clock,
-  Plus, Trash2, Edit3, Check, X, Calendar, RotateCcw
+  Plus, Trash2, Edit3, Check, X, Calendar, RotateCcw,
+  ChevronLeft, ChevronRight, Repeat, Bell, ArrowRightCircle
 } from 'lucide-react';
+
+// ── Hafta yardımcıları ───────────────────────────────────────────────────────
+// Tüm hafta hesapları Pazartesi-başlangıçlı. offset: 0 = bu hafta, -1 = geçen,
+// +1 = gelecek. Yerel saat diliminde çalışır (tarih string'leri YYYY-MM-DD).
+const TR_DAYS = ['Pazar', 'Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi'];
+
+const toDateStr = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+const parseDateStr = (s) => {
+  const [y, m, d] = s.split('-');
+  return new Date(Number(y), Number(m) - 1, Number(d));
+};
+
+// Verilen offset için o haftanın Pazartesi ve Pazar tarihlerini döndürür.
+const getWeekRange = (offset = 0) => {
+  const today = new Date();
+  const day = today.getDay();
+  const diff = today.getDate() - day + (day === 0 ? -6 : 1);
+  const monday = new Date(today);
+  monday.setDate(diff + offset * 7);
+  monday.setHours(0, 0, 0, 0);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  sunday.setHours(23, 59, 59, 999);
+  return { monday, sunday };
+};
+
+// Bir item'ın verilen offset haftasında o haftanın hangi tarihine düştüğünü
+// (recurring materializasyonu ve carry-over için) hesaplar. dayName Türkçe.
+const dateForWeekday = (offset, dayName) => {
+  const { monday } = getWeekRange(offset);
+  const idx = TR_DAYS.indexOf(dayName); // 0=Pazar..6=Cumartesi
+  // Pazartesi-başlangıçlı ofset: Pazartesi=0 ... Pazar=6
+  const monBasedIdx = idx === 0 ? 6 : idx - 1;
+  const d = new Date(monday);
+  d.setDate(monday.getDate() + monBasedIdx);
+  return toDateStr(d);
+};
+
+const DONE_STATUSES = ['published', 'yayında', 'yayinlandi', 'yayınlandı', 'done', 'tamamlandı', 'tamamlandi', 'completed'];
+const isDoneItem = (item) =>
+  item.checked === true || DONE_STATUSES.includes(String(item.status || '').toLowerCase().trim());
 
 const DAYS_OF_WEEK = [
   { value: 'Pazartesi', label: 'Pazartesi' },
@@ -35,7 +83,7 @@ const getDayLabel = (dayName, lang) => {
   return trToEn[dayName] || dayName;
 };
 
-export default function WeeklyContent({ lang, weeklyData, onRefresh }) {
+export default function WeeklyContent({ lang, weeklyData, aiEnabled = false, onRefresh }) {
   const t = translations[lang] || translations.en;
   const [expandedDay, setExpandedDay] = useState(null);
   const [expandedInsight, setExpandedInsight] = useState(null);
@@ -65,29 +113,169 @@ export default function WeeklyContent({ lang, weeklyData, onRefresh }) {
   
   const [convertingId, setConvertingId] = useState(null);
 
+  // Hafta navigasyonu: 0 = bu hafta, -1 geçen, +1 gelecek.
+  const [weekOffset, setWeekOffset] = useState(0);
+  // Otomatik carry-over sonrası kullanıcıya gösterilecek bilgi satırı.
+  const [carryOverToast, setCarryOverToast] = useState(null);
+  // Aynı oturumda carry-over ve bildirim izin akışının bir kez çalışması için.
+  const carriedOverRef = useRef(false);
+  const notifiedRef = useRef(new Set());
+
+  // Effect'ler için planner referansı — Hook kuralları gereği erken-return'den
+  // ÖNCE tanımlanmalı (weeklyData null olabilir, o yüzden güvenli erişim).
+  const plannerForEffects = weeklyData?.contentPlanner;
+
+  // ── Otomatik carry-over ──────────────────────────────────────────────────
+  // Uygulama açılıp planner geldiğinde bir kez çalışır: bu haftadan ÖNCEKİ
+  // tarihli, tamamlanmamış (ne checked ne de "yayında/done") içerik item'larını
+  // bu haftanın aynı hafta-gününe sessizce taşır. Görevler (task) hariç.
+  useEffect(() => {
+    if (carriedOverRef.current) return;
+    if (!plannerForEffects || plannerForEffects.length === 0) return;
+
+    const { monday: thisMonday } = getWeekRange(0);
+    const stale = plannerForEffects.filter(item => {
+      if (item.type === 'task') return false;
+      if (item.recurring === 'weekly') return false; // şablonlar taşınmaz
+      if (!item.date) return false;                  // tarihsiz zaten bu hafta
+      if (isDoneItem(item)) return false;
+      return parseDateStr(item.date) < thisMonday;
+    });
+
+    if (stale.length === 0) {
+      carriedOverRef.current = true;
+      return;
+    }
+
+    carriedOverRef.current = true; // tekrar tetiklenmesin
+    (async () => {
+      let moved = 0;
+      for (const item of stale) {
+        const newDate = dateForWeekday(0, item.day || TR_DAYS[parseDateStr(item.date).getDay()]);
+        try {
+          const res = await fetch('/api/weekly-content/planner', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...item, date: newDate, carriedOverAt: new Date().toISOString() })
+          });
+          if (res.ok) moved++;
+        } catch (err) {
+          console.error('Carry-over failed for item', item.id, err);
+        }
+      }
+      if (moved > 0) {
+        const label = (translations[lang] || translations.en).carriedOverToast;
+        setCarryOverToast(`${moved} ${label}`);
+        setTimeout(() => setCarryOverToast(null), 6000);
+        if (onRefresh) await onRefresh(true);
+      }
+    })();
+  }, [plannerForEffects]);
+
+  // ── Tarayıcı bildirimi (uygulama açıkken) ────────────────────────────────
+  // `time` alanı dolu, bugüne tarihli, tamamlanmamış item'lar için; planlanan
+  // dakika geldiğinde (uygulama açıksa) bir Notification gösterir. Kapalıyken
+  // bildirim (push) bu sürümde yoktur — Service Worker gerektirir.
+  useEffect(() => {
+    if (typeof Notification === 'undefined') return;
+    if (Notification.permission === 'default') {
+      // İlk yüklemede izin iste (kullanıcı reddederse sessizce devre dışı kalır).
+      Notification.requestPermission().catch(() => {});
+    }
+    if (Notification.permission !== 'granted') return;
+
+    const checkReminders = () => {
+      const now = new Date();
+      const todayStr = toDateStr(now);
+      const fallbackTitle = (translations[lang] || translations.en).reminderFallbackTitle;
+      (plannerForEffects || []).forEach(item => {
+        if (item.type === 'task') return;
+        if (!item.time || !item.date) return;
+        if (item.date !== todayStr) return;
+        if (isDoneItem(item)) return;
+        const [hh, mm] = String(item.time).split(':').map(Number);
+        if (Number.isNaN(hh)) return;
+        const target = new Date(now);
+        target.setHours(hh, mm || 0, 0, 0);
+        const diffMin = (target - now) / 60000;
+        const key = `${item.id}-${item.date}`;
+        // Planlanan dakikaya 0–1 dk kala, bir kez tetikle.
+        if (diffMin <= 1 && diffMin >= 0 && !notifiedRef.current.has(key)) {
+          notifiedRef.current.add(key);
+          try {
+            new Notification(`📅 ${item.topic || fallbackTitle}`, {
+              body: `${item.time} · ${item.format || ''} ${item.hook ? '— ' + item.hook : ''}`.trim(),
+            });
+          } catch (e) { /* yok say */ }
+        }
+      });
+    };
+
+    checkReminders();
+    const interval = setInterval(checkReminders, 30000); // 30 sn'de bir kontrol
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plannerForEffects, lang]);
+
   if (!weeklyData) return null;
 
   const { instagramAnalyzed, contentPlanner, weeklyDigest } = weeklyData;
   const brainstormIdeas = weeklyData.brainstormIdeas || [];
 
-  // The planner lists ONLY the current week's (Mon–Sun) content — items dated
-  // in past or future weeks live in the Calendar, not here. Legacy items with
-  // just a day name (no date) belong to the current week by construction.
-  const plannerThisWeek = (() => {
-    const today = new Date();
-    const day = today.getDay();
-    const diff = today.getDate() - day + (day === 0 ? -6 : 1);
-    const monday = new Date(today); monday.setDate(diff); monday.setHours(0, 0, 0, 0);
-    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6); sunday.setHours(23, 59, 59, 999);
+  const { monday, sunday } = getWeekRange(weekOffset);
+  const isCurrentWeek = weekOffset === 0;
 
-    return (contentPlanner || []).filter(item => {
+  // Seçili haftanın (Pzt–Paz) içeriğini üret. Üç kaynak birleşir:
+  //  1) O haftaya tarihli gerçek planner item'ları.
+  //  2) Yalnızca bu hafta görünen tarihsiz gün-adı item'ları (legacy/AI).
+  //  3) `recurring: 'weekly'` item'larından, o hafta karşılığı yoksa
+  //     görüntüde üretilen (materialize) kopyalar — düzenlenince gerçek olur.
+  const plannerThisWeek = (() => {
+    const base = (contentPlanner || []).filter(item => {
       if (item.type === 'task') return false;
-      if (!item.date) return true;
-      const parts = item.date.split('-');
-      const itemDate = new Date(parts[0], parts[1] - 1, parts[2]);
+      if (!item.date) return isCurrentWeek; // tarihsiz item sadece bu hafta
+      const itemDate = parseDateStr(item.date);
       return itemDate >= monday && itemDate <= sunday;
     });
+
+    // Recurring şablonlarını materialize et (bu haftada tarihli karşılığı yoksa).
+    const recurringTemplates = (contentPlanner || []).filter(
+      item => item.recurring === 'weekly' && item.type !== 'task'
+    );
+    const virtual = [];
+    for (const tmpl of recurringTemplates) {
+      const targetDate = dateForWeekday(weekOffset, tmpl.recurDay || tmpl.day || 'Pazartesi');
+      const alreadyReal = base.some(
+        b => b.date === targetDate || b.recurOriginId === tmpl.id || b.id === tmpl.id
+      );
+      // Şablonun kendisi bu haftaya tarihliyse ikinci kez ekleme.
+      if (tmpl.date === targetDate) continue;
+      if (!alreadyReal) {
+        virtual.push({
+          ...tmpl,
+          id: `virtual-${tmpl.id}-${targetDate}`,
+          date: targetDate,
+          day: tmpl.recurDay || tmpl.day,
+          status: 'Planlandı',
+          checked: false,
+          isVirtualRecurring: true,
+          recurOriginId: tmpl.id,
+        });
+      }
+    }
+
+    const combined = [...base, ...virtual];
+    // Gün sırasına göre sırala (Pazartesi → Pazar).
+    return combined.sort((a, b) => {
+      const da = a.date ? parseDateStr(a.date).getTime() : 0;
+      const db = b.date ? parseDateStr(b.date).getTime() : 0;
+      return da - db;
+    });
   })();
+
+  const fmtShort = (d) => `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const weekRangeLabel = `${fmtShort(monday)} – ${fmtShort(sunday)}`;
+  const weekTitle = weekOffset === 0 ? t.thisWeek : weekOffset === -1 ? t.lastWeek : weekOffset === 1 ? t.nextWeek : `${weekOffset > 0 ? '+' : ''}${weekOffset} ${t.weeksLabel}`;
   const displayedIdeas = activeFormatFilter === 'All' 
     ? brainstormIdeas 
     : brainstormIdeas.filter(idea => idea.format === activeFormatFilter);
@@ -194,6 +382,48 @@ export default function WeeklyContent({ lang, weeklyData, onRefresh }) {
       if (onRefresh) await onRefresh(true);
     } catch (err) {
       console.error('Error converting brainstorm idea to planner:', err);
+    }
+  };
+
+  // Bir planner item'ını haftalık tekrar şablonuna çevir / şablonu kapat.
+  // Virtual (henüz kaydedilmemiş) recurring kopyayı önce gerçek item yapıp
+  // şablon olarak işaretler.
+  const handleToggleRecurring = async (plannerItem) => {
+    // Virtual (henüz kaydedilmemiş) recurring kopya için işlem, onu üreten
+    // GERÇEK şablonu hedeflemeli — yoksa yeni bir kopya yaratılır ve şablon
+    // olduğu gibi kalır.
+    if (plannerItem.isVirtualRecurring) {
+      const origin = (contentPlanner || []).find(p => p.id === plannerItem.recurOriginId);
+      if (!origin) return;
+      const payload = { ...origin, recurring: null, recurDay: null };
+      try {
+        const res = await fetch('/api/weekly-content/planner', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (res.ok && onRefresh) await onRefresh(true);
+      } catch (err) {
+        console.error('Error toggling recurring (virtual):', err);
+      }
+      return;
+    }
+
+    const willRecur = !(plannerItem.recurring === 'weekly');
+    const payload = {
+      ...plannerItem,
+      recurring: willRecur ? 'weekly' : null,
+      recurDay: willRecur ? (plannerItem.day || null) : null,
+    };
+    try {
+      const res = await fetch('/api/weekly-content/planner', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok && onRefresh) await onRefresh(true);
+    } catch (err) {
+      console.error('Error toggling recurring:', err);
     }
   };
 
@@ -352,17 +582,50 @@ export default function WeeklyContent({ lang, weeklyData, onRefresh }) {
     <div className="weekly-container">
       {/* ── Weekly Content Planner ─────────────────────────────────────────── */}
       <div className="influencer-section">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <CalendarRange size={20} style={{ color: 'var(--color-coral-dark)' }} />
             <h2 className="card-title" style={{ fontSize: '24px' }}>{t.weeklyPlanner}</h2>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            {aiError && (
+            {/* ── Hafta navigasyonu ── */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'var(--bg-card)', border: '1px solid var(--border-card)', borderRadius: '20px', padding: '4px 6px' }}>
+              <button
+                onClick={() => setWeekOffset(weekOffset - 1)}
+                title={t.prevWeek}
+                style={{ display: 'flex', alignItems: 'center', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)', padding: '4px', borderRadius: '50%' }}
+              >
+                <ChevronLeft size={16} />
+              </button>
+              <div style={{ textAlign: 'center', minWidth: '120px', lineHeight: 1.2 }}>
+                <div style={{ fontSize: '12px', fontWeight: 700, color: isCurrentWeek ? 'var(--color-coral-dark)' : 'var(--text-main)' }}>{weekTitle}</div>
+                <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{weekRangeLabel}</div>
+              </div>
+              <button
+                onClick={() => setWeekOffset(weekOffset + 1)}
+                title={t.nextWeekBtn}
+                style={{ display: 'flex', alignItems: 'center', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)', padding: '4px', borderRadius: '50%' }}
+              >
+                <ChevronRight size={16} />
+              </button>
+              {!isCurrentWeek && (
+                <button
+                  onClick={() => setWeekOffset(0)}
+                  title={t.backToThisWeek}
+                  style={{ fontSize: '10px', fontWeight: 700, border: 'none', background: 'var(--color-coral-dark)', color: 'white', cursor: 'pointer', padding: '4px 8px', borderRadius: '12px' }}
+                >
+                  {t.today}
+                </button>
+              )}
+            </div>
+            {/* AI üretimi yalnızca 'ai' özelliği açıkken görünür (aksi halde
+                endpoint 503 döner). Kapalıysa buton hiç render edilmez. */}
+            {aiEnabled && aiError && (
                <span style={{ fontSize: '11px', color: '#C0392B', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 ⚠️ {aiError}
               </span>
             )}
+            {aiEnabled && (
             <button
                onClick={handleAIGenerate}
                disabled={aiGenerating}
@@ -381,8 +644,21 @@ export default function WeeklyContent({ lang, weeklyData, onRefresh }) {
               <Sparkles size={13} style={{ animation: aiGenerating ? 'spin 1.5s linear infinite' : 'none' }} />
               {aiGenerating ? t.aiGenerating : t.aiGenerate}
             </button>
+            )}
           </div>
         </div>
+
+        {carryOverToast && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px',
+            padding: '10px 14px', borderRadius: '10px',
+            background: 'rgba(52, 168, 83, 0.12)', border: '1px solid rgba(52, 168, 83, 0.35)',
+            color: '#1E7E34', fontSize: '13px', fontWeight: 600
+          }}>
+            <ArrowRightCircle size={16} />
+            {carryOverToast}
+          </div>
+        )}
 
         <div className="planner-grid">
           {plannerThisWeek.map((dayPlan, idx) => {
@@ -402,7 +678,24 @@ export default function WeeklyContent({ lang, weeklyData, onRefresh }) {
                   </div>
                   <div className="planner-day-content" style={{ width: '100%' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                      <span className="planner-day-title">{dayPlan.topic || dayPlan.title}</span>
+                      <span className="planner-day-title" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        {dayPlan.topic || dayPlan.title}
+                        {(dayPlan.recurring === 'weekly' || dayPlan.isVirtualRecurring) && (
+                          <span title={t.recurringWeekly} style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', fontSize: '10px', fontWeight: 700, color: '#8B5CF6', background: 'rgba(139,92,246,0.12)', padding: '1px 6px', borderRadius: '8px' }}>
+                            <Repeat size={10} /> {t.recurringBadge}
+                          </span>
+                        )}
+                        {dayPlan.carriedOverAt && (
+                          <span title={t.carriedOverBadgeTip} style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', fontSize: '10px', fontWeight: 700, color: '#1E7E34', background: 'rgba(52,168,83,0.12)', padding: '1px 6px', borderRadius: '8px' }}>
+                            <ArrowRightCircle size={10} /> {t.carriedOverBadge}
+                          </span>
+                        )}
+                        {dayPlan.time && (
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', fontSize: '10px', fontWeight: 700, color: 'var(--text-muted)' }}>
+                            <Clock size={10} /> {dayPlan.time}
+                          </span>
+                        )}
+                      </span>
                       <div className="planner-meta">
                         <span className="planner-format">{dayPlan.format}</span>
                         <span className="planner-status">· {dayPlan.status}</span>
@@ -446,36 +739,52 @@ export default function WeeklyContent({ lang, weeklyData, onRefresh }) {
                       )}
                     </div>
                     
-                    {/* Revert to Brainstorm Button */}
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '16px', borderTop: '1px dashed rgba(183, 157, 148, 0.25)', paddingTop: '12px' }}>
+                    {/* Action buttons: recurring toggle + revert to brainstorm */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '16px', borderTop: '1px dashed rgba(183, 157, 148, 0.25)', paddingTop: '12px', gap: '8px', flexWrap: 'wrap' }}>
                       <button
-                         onClick={() => handleRevertToBrainstorm(dayPlan)}
+                         onClick={() => handleToggleRecurring(dayPlan)}
+                         title={t.recurringToggleTip}
                          style={{
-                           display: 'flex',
-                           alignItems: 'center',
-                           gap: '6px',
-                           padding: '6px 12px',
-                           borderRadius: '8px',
-                           border: '1px solid rgba(183, 157, 148, 0.4)',
-                           background: 'transparent',
-                           color: 'var(--text-muted)',
-                           fontSize: '11.5px',
-                           fontWeight: '600',
-                           cursor: 'pointer',
-                           transition: 'all 0.2s'
-                         }}
-                         onMouseEnter={(e) => {
-                           e.currentTarget.style.background = 'rgba(183, 157, 148, 0.1)';
-                           e.currentTarget.style.color = 'var(--text-main)';
-                         }}
-                         onMouseLeave={(e) => {
-                           e.currentTarget.style.background = 'transparent';
-                           e.currentTarget.style.color = 'var(--text-muted)';
+                           display: 'flex', alignItems: 'center', gap: '6px',
+                           padding: '6px 12px', borderRadius: '8px',
+                           border: `1px solid ${(dayPlan.recurring === 'weekly') ? '#8B5CF6' : 'rgba(139,92,246,0.4)'}`,
+                           background: (dayPlan.recurring === 'weekly') ? 'rgba(139,92,246,0.12)' : 'transparent',
+                           color: '#8B5CF6', fontSize: '11.5px', fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s'
                          }}
                       >
-                        <RotateCcw size={12} />
-                        {t.removeFromPlanner}
+                        <Repeat size={12} />
+                        {(dayPlan.recurring === 'weekly') ? t.recurringOn : t.makeRecurring}
                       </button>
+                      {!dayPlan.isVirtualRecurring && (
+                        <button
+                           onClick={() => handleRevertToBrainstorm(dayPlan)}
+                           style={{
+                             display: 'flex',
+                             alignItems: 'center',
+                             gap: '6px',
+                             padding: '6px 12px',
+                             borderRadius: '8px',
+                             border: '1px solid rgba(183, 157, 148, 0.4)',
+                             background: 'transparent',
+                             color: 'var(--text-muted)',
+                             fontSize: '11.5px',
+                             fontWeight: '600',
+                             cursor: 'pointer',
+                             transition: 'all 0.2s'
+                           }}
+                           onMouseEnter={(e) => {
+                             e.currentTarget.style.background = 'rgba(183, 157, 148, 0.1)';
+                             e.currentTarget.style.color = 'var(--text-main)';
+                           }}
+                           onMouseLeave={(e) => {
+                             e.currentTarget.style.background = 'transparent';
+                             e.currentTarget.style.color = 'var(--text-muted)';
+                           }}
+                        >
+                          <RotateCcw size={12} />
+                          {t.removeFromPlanner}
+                        </button>
+                      )}
                     </div>
                   </div>
                 )}
@@ -484,7 +793,7 @@ export default function WeeklyContent({ lang, weeklyData, onRefresh }) {
           })}
           {plannerThisWeek.length === 0 && (
             <div style={{ textAlign: 'center', padding: '24px', background: 'var(--bg-card)', borderRadius: '12px', border: '1px solid var(--border-card)', color: 'var(--text-muted)' }}>
-              {t.noContentPlanned}
+              {isCurrentWeek ? t.noContentPlanned : t.noContentThisWeek}
             </div>
           )}
         </div>
@@ -516,7 +825,9 @@ export default function WeeklyContent({ lang, weeklyData, onRefresh }) {
             💡 {t.addNewIdea}
           </h3>
           
-          {/* Video URL Transcription & Rewrite Widget */}
+          {/* Video URL Transcription & Rewrite Widget — 'ai' özelliği (Whisper +
+              OpenRouter) açıkken görünür; kapalı deploy'da endpoint 503 döner. */}
+          {aiEnabled && (
           <div style={{
             background: 'var(--bg-app)', border: '1.5px dashed var(--border-card)',
             borderRadius: '10px', padding: '14px', marginBottom: '8px',
@@ -571,6 +882,7 @@ export default function WeeklyContent({ lang, weeklyData, onRefresh }) {
               </div>
             )}
           </div>
+          )}
 
           <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
             <div style={{ flex: 1, minWidth: '200px' }}>

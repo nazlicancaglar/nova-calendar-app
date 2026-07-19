@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { RefreshCw, LayoutDashboard, Newspaper, Calendar, CalendarRange, Target, Moon, Palette, LogOut } from 'lucide-react';
+import { RefreshCw, LayoutDashboard, Newspaper, Calendar, CalendarRange, Target, Moon, Palette, LogOut, Download } from 'lucide-react';
 import Dashboard from './components/Dashboard';
 import Newsletter from './components/Newsletter';
 import WeeklyContent from './components/WeeklyContent';
@@ -33,6 +33,27 @@ export default function App() {
   const handleSetLang = (newLang) => {
     setLang(newLang);
     localStorage.setItem('lang', newLang);
+  };
+
+  // CSV indir: auth header gerektiği için basit <a href> yerine fetch ile
+  // (global fetch wrapper token'ı otomatik ekler) blob indiriyoruz.
+  const handleExportCsv = async () => {
+    try {
+      const res = await fetch('/api/export.csv');
+      if (!res.ok) throw new Error('export failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const stamp = new Date().toISOString().slice(0, 10);
+      a.download = `nova-export-${stamp}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('CSV export failed:', e);
+    }
   };
 
   const t = translations[lang] || translations.en;
@@ -376,6 +397,21 @@ export default function App() {
         </button>
 
         <button
+          onClick={handleExportCsv}
+          title={lang === 'tr' ? 'CSV indir' : 'Export CSV'}
+          style={{
+            width: '40px', height: '40px', borderRadius: '50%',
+            backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-card)',
+            color: 'var(--text-main)', boxShadow: 'var(--shadow-md)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', transition: 'var(--transition-smooth)'
+          }}
+          className="theme-toggle-btn"
+        >
+          <Download size={18} />
+        </button>
+
+        <button
           onClick={() => { clearToken(); setAuthed(false); }}
           title={lang === 'tr' ? 'Çıkış Yap' : 'Log out'}
           style={{
@@ -535,6 +571,7 @@ export default function App() {
               onReorderPriorities={handleReorderPriorities}
               onSync={onSync => handleSyncData()}
               syncing={syncing}
+              syncEnabled={features.sync}
               onRefresh={fetchDashboardData}
             />
           )}
@@ -549,12 +586,13 @@ export default function App() {
             <Newsletter lang={lang} />
           )}
           {activeTab === 'design' && (
-            <DesignBoard lang={lang} onAddPriority={handleAddPriority} onRefresh={fetchDashboardData} />
+            <DesignBoard lang={lang} ocrEnabled={features.ocr} onAddPriority={handleAddPriority} onRefresh={fetchDashboardData} />
           )}
           {activeTab === 'weekly-content' && (
             <WeeklyContent
               lang={lang}
               weeklyData={dashboardData ? dashboardData.weeklyContent : null}
+              aiEnabled={features.ai}
               onRefresh={fetchDashboardData}
             />
           )}

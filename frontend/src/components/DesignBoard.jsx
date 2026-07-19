@@ -12,7 +12,7 @@ const BRUSH_COLORS = ['#1f2937', '#ef4444', '#f97316', '#eab308', '#22c55e', '#3
 const BRUSH_SIZES = [3, 6, 12];
 const NOTE_COLORS = ['#fff7ae', '#ffd6d6', '#d6f5d6', '#d6e6ff', '#f0d6ff'];
 
-export default function DesignBoard({ lang, onAddPriority, onRefresh }) {
+export default function DesignBoard({ lang, ocrEnabled = false, onAddPriority, onRefresh }) {
   const t = translations[lang] || translations.tr;
 
   const canvasRef = useRef(null);
@@ -400,6 +400,9 @@ export default function DesignBoard({ lang, onAddPriority, onRefresh }) {
                 <ScanText size={14} /> {t.selectTool}
               </button>
 
+              {/* El yazısı tanıma (TrOCR) yalnızca 'ocr' özelliği açıkken
+                  görünür; kapalı deploy'da endpoint 503 döner. */}
+              {ocrEnabled && (<>
               <div style={{ width: '1px', height: '22px', background: 'var(--border-card)' }} />
 
               <button
@@ -417,6 +420,7 @@ export default function DesignBoard({ lang, onAddPriority, onRefresh }) {
                 {recognizing ? <Loader2 size={14} className="spin" /> : <ScanText size={14} />}
                 {recognizing ? t.recognizingStatus : t.recognizeButton}
               </button>
+              </>)}
 
               <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <span style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '5px' }}>
