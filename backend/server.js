@@ -769,14 +769,11 @@ app.post('/api/weekly-content/planner', (req, res) => {
 
   const planner = data.weeklyContent.contentPlanner;
 
-  // Find index by id first, then fallback to matching date or day (for legacy items)
+  // Only treat as an update when an explicit id is provided; otherwise always
+  // create a new item so multiple plans/tasks can share the same date/day.
   let index = -1;
   if (id) {
     index = planner.findIndex(item => item.id === id);
-  } else if (date) {
-    index = planner.findIndex(item => item.date === date);
-  } else if (day) {
-    index = planner.findIndex(item => item.day === day && !item.date);
   }
 
   const calculatedDay = day || (() => {
